@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "path": "users/{userId}",
+      "description": "User profile and security document",
+      "fields": {
+        "uid": { "type": "string", "description": "Verified Firebase user ID" },
+        "email": { "type": "string", "description": "User email" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" },
+        "lastLoginAt": { "type": "timestamp", "description": "Last sign-in timestamp" }
+      }
+    },
+    "Journal": {
+      "path": "users/{userId}/journals/{journalId}",
+      "description": "Private journal entries",
+      "fields": {
+        "id": { "type": "string", "description": "Unique entry ID" },
+        "title": { "type": "string", "description": "Entry title" },
+        "content": { "type": "string", "description": "Journal text body" },
+        "mood": { "type": "string", "description": "Mood or state tag" },
+        "tags": { "type": "array", "description": "Topic tags" },
+        "summary": { "type": "string", "description": "AI-generated summary" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" },
+        "updatedAt": { "type": "timestamp", "description": "Last updated timestamp" }
+      }
+    },
+    "Conversation": {
+      "path": "users/{userId}/conversations/{conversationId}",
+      "description": "Multi-turn journaling session and conversation container",
+      "fields": {
+        "id": { "type": "string", "description": "Unique conversation ID" },
+        "title": { "type": "string", "description": "Conversation topic/title" },
+        "summary": { "type": "string", "description": "AI-generated session summary" },
+        "messageCount": { "type": "number", "description": "Count of messages" },
+        "createdAt": { "type": "timestamp", "description": "Created at" },
+        "updatedAt": { "type": "timestamp", "description": "Last updated" }
+      }
+    },
+    "Message": {
+      "path": "users/{userId}/conversations/{conversationId}/messages/{messageId}",
+      "description": "Individual message in a multi-turn journal chat",
+      "fields": {
+        "id": { "type": "string", "description": "Message ID" },
+        "role": { "type": "string", "description": "'user' or 'assistant'" },
+        "text": { "type": "string", "description": "Sanitized content" },
+        "createdAt": { "type": "timestamp", "description": "Timestamp" }
+      }
+    },
+    "Summary": {
+      "path": "users/{userId}/summaries/{summaryId}",
+      "description": "Saved automated session summaries",
+      "fields": {
+        "id": { "type": "string", "description": "Summary ID" },
+        "sourceType": { "type": "string", "description": "'conversation' or 'journal'" },
+        "sourceId": { "type": "string", "description": "ID of source document" },
+        "title": { "type": "string", "description": "Summary title" },
+        "summaryText": { "type": "string", "description": "Concise summary" },
+        "keyThemes": { "type": "array", "description": "Extracted key themes" },
+        "actionableTakeaways": { "type": "array", "description": "Action items or takeaways" },
+        "createdAt": { "type": "timestamp", "description": "Created at" }
+      }
+    },
+    "Insight": {
+      "path": "users/{userId}/insights/{insightId}",
+      "description": "Deep reflection insights derived strictly from user's history",
+      "fields": {
+        "id": { "type": "string", "description": "Insight report ID" },
+        "recurringThemes": { "type": "array", "description": "Recurring themes identified" },
+        "frequentlyMentionedGoals": { "type": "array", "description": "Frequently mentioned goals" },
+        "unresolvedConcerns": { "type": "array", "description": "Unresolved concerns and blocks" },
+        "notableChanges": { "type": "array", "description": "Notable progression across entries" },
+        "reflectionQuestions": { "type": "array", "description": "Curated deep reflection questions" },
+        "entryCountAnalyzed": { "type": "number", "description": "Number of user entries analyzed" },
+        "generatedAt": { "type": "timestamp", "description": "Generated at" }
+      }
+    }
+  }
+}
