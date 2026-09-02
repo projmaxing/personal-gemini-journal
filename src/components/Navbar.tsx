@@ -41,9 +41,9 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400 hidden sm:flex items-center gap-1.5">
-              <span>Zero-Trust Cloud Vault</span>
+              <span>Private</span>
               <span>•</span>
-              <span>UID: <code className="font-mono text-[10px] text-slate-300 bg-slate-800 px-1 py-0.5 rounded">{user.uid.slice(0, 8)}...</code></span>
+              <span>{isAnonymous ? 'Guest Account' : user.email || 'Authenticated'}</span>
             </p>
           </div>
         </div>

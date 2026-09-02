@@ -5,10 +5,14 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
+  deleteDoc,
   getDocs, 
   query, 
+  where,
   orderBy, 
-  onSnapshot 
+  onSnapshot,
+  sanitizeForFirestore 
 } from '../firebase/config';
 import { sendChatMessage, generateSummary } from '../services/api';
 import { ChatMessage, Conversation, SessionSummary } from '../types';
@@ -25,7 +29,9 @@ import {
   CornerDownLeft,
   ChevronRight,
   Smile,
-  Compass
+  Compass,
+  Trash2,
+  X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -55,12 +61,16 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summaryNotification, setSummaryNotification] = useState<string | null>(null);
+  const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const currentConversationIdRef = useRef<string | null>(null);
   currentConversationIdRef.current = currentConversationId;
+  const isCreatingSessionRef = useRef(false);
+  const initialLoadDoneRef = useRef(false);
 
   // Auto-scroll to bottom of chat
   const scrollToBottom = () => {
@@ -70,11 +80,6 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages, isGenerating]);
-
-  // Clear composer text whenever active conversation changes to prevent draft leakage across sessions
-  useEffect(() => {
-    setInputText('');
-  }, [currentConversationId]);
 
   // Load user's conversations list from Firestore: users/{uid}/conversations
   useEffect(() => {
@@ -91,17 +96,21 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         }));
         setConversations(loaded);
 
-        // Use ref to avoid stale closure of currentConversationId
         const activeId = currentConversationIdRef.current;
-        if (!activeId && loaded.length > 0) {
-          setCurrentConversationId(loaded[0].id);
-        } else if (loaded.length === 0 && !activeId) {
-          handleNewConversation();
+        if (!activeId) {
+          if (loaded.length > 0) {
+            const firstId = loaded[0].id;
+            currentConversationIdRef.current = firstId;
+            setCurrentConversationId(firstId);
+          } else if (!initialLoadDoneRef.current && !isCreatingSessionRef.current) {
+            initialLoadDoneRef.current = true;
+            handleNewConversation();
+          }
         }
       },
       (err) => {
         console.error('Firestore conversations listener error:', err);
-        setError('Error loading conversation history from isolated Firestore.');
+        setError('Error loading conversation history. Please refresh.');
       }
     );
 
@@ -115,44 +124,66 @@ export const JournalChat: React.FC<JournalChatProps> = ({
       return;
     }
 
-    const messagesRef = collection(db, 'users', user.uid, 'conversations', currentConversationId, 'messages');
+    // Immediately clear displayed messages when switching or creating conversations
+    setMessages([]);
+
+    const targetConvId = currentConversationId;
+    const messagesRef = collection(db, 'users', user.uid, 'conversations', targetConvId, 'messages');
     const q = query(messagesRef, orderBy('createdAt', 'asc'));
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
+        // Discard any incoming snapshots if user switched away to a different conversation
+        if (currentConversationIdRef.current !== targetConvId) return;
+
         const loadedMsgs: ChatMessage[] = snapshot.docs.map((docSnap) => ({
           id: docSnap.id,
           ...(docSnap.data() as Omit<ChatMessage, 'id'>),
         }));
 
-        setMessages((prev) => {
-          const loadedIds = new Set(loadedMsgs.map((m) => m.id));
-          const pendingOptimistic = prev.filter((m) => !loadedIds.has(m.id));
-          if (pendingOptimistic.length === 0) {
-            return loadedMsgs;
-          }
-          return [...loadedMsgs, ...pendingOptimistic].sort((a, b) => a.createdAt - b.createdAt);
-        });
+        setMessages(loadedMsgs);
       },
       (err) => {
         console.error('Firestore messages listener error:', err);
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+    };
   }, [user, currentConversationId]);
 
-  // Create a new private conversation session
+  // Handler to switch active conversation with instant state cleanup
+  const handleSelectConversation = (convId: string) => {
+    if (convId === currentConversationId) return;
+    currentConversationIdRef.current = convId;
+    setCurrentConversationId(convId);
+    setMessages([]);
+    setInputText('');
+    setIsGenerating(false);
+    setIsSummarizing(false);
+    setError(null);
+  };
+
+  // Create a genuinely new private conversation session
   const handleNewConversation = async () => {
-    if (!user) return;
-    // Synchronously clear composer, messages, and any previous error immediately upon user action
+    if (!user || isCreatingSessionRef.current) return;
+    isCreatingSessionRef.current = true;
+
+    // Immediately clear displayed state, draft text, and generation flags
     setInputText('');
     setMessages([]);
+    setIsGenerating(false);
+    setIsSummarizing(false);
     setError(null);
 
+    // Generate unique conversation ID
+    const newId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    currentConversationIdRef.current = newId;
+    setCurrentConversationId(newId);
+
     try {
-      const newId = `conv_${Date.now()}`;
       const newConv: Conversation = {
         id: newId,
         userId: user.uid,
@@ -162,11 +193,61 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         updatedAt: Date.now(),
       };
 
-      setCurrentConversationId(newId);
-      await setDoc(doc(db, 'users', user.uid, 'conversations', newId), newConv);
+      await setDoc(doc(db, 'users', user.uid, 'conversations', newId), sanitizeForFirestore(newConv));
     } catch (err: any) {
       console.error('Error creating conversation:', err);
-      setError('Could not create new session in Firestore.');
+      setError('Could not create new session. Please try again.');
+    } finally {
+      isCreatingSessionRef.current = false;
+    }
+  };
+
+  // Delete conversation and its messages from Firestore
+  const handleDeleteConversation = async (conv: Conversation) => {
+    if (!user || isGenerating || isDeleting) return;
+    setIsDeleting(true);
+    setError(null);
+
+    const convIdToDelete = conv.id;
+    const isCurrentlySelected = currentConversationId === convIdToDelete;
+
+    try {
+      // 1. Fetch all message docs in the subcollection and delete them
+      const messagesRef = collection(db, 'users', user.uid, 'conversations', convIdToDelete, 'messages');
+      const messagesSnap = await getDocs(messagesRef);
+      const deleteMessagePromises = messagesSnap.docs.map((docSnap) => deleteDoc(docSnap.ref));
+      await Promise.all(deleteMessagePromises);
+
+      // 2. Delete the conversation document itself
+      await deleteDoc(doc(db, 'users', user.uid, 'conversations', convIdToDelete));
+
+      // Note: Journal Entries and Saved Summaries are not affected by conversation deletion.
+
+      // 3. Update active conversation if the deleted one was selected
+      if (isCurrentlySelected) {
+        setMessages([]);
+        setInputText('');
+        setIsGenerating(false);
+        setIsSummarizing(false);
+
+        const remaining = conversations.filter((c) => c.id !== convIdToDelete);
+        if (remaining.length > 0) {
+          const nextConv = remaining[0];
+          currentConversationIdRef.current = nextConv.id;
+          setCurrentConversationId(nextConv.id);
+        } else {
+          currentConversationIdRef.current = null;
+          setCurrentConversationId(null);
+          await handleNewConversation();
+        }
+      }
+
+      setConversationToDelete(null);
+    } catch (err: any) {
+      console.error('Error deleting conversation from Firestore:', err);
+      setError(err.message || 'Failed to delete conversation. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -175,11 +256,14 @@ export const JournalChat: React.FC<JournalChatProps> = ({
     const promptToSend = customPrompt || inputText;
     if (!promptToSend.trim() || isGenerating || !user) return;
 
-    const convId = currentConversationId || `conv_${Date.now()}`;
-    if (!currentConversationId) {
+    let convId = currentConversationId;
+    if (!convId) {
+      convId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      currentConversationIdRef.current = convId;
       setCurrentConversationId(convId);
     }
 
+    const targetConvId = convId;
     const userMsgId = `msg_${Date.now()}_u`;
 
     const userMessage: ChatMessage = {
@@ -189,11 +273,13 @@ export const JournalChat: React.FC<JournalChatProps> = ({
       createdAt: Date.now(),
     };
 
-    // Optimistically add user message immediately before any asynchronous operation
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === userMsgId)) return prev;
-      return [...prev, userMessage];
-    });
+    // Optimistically add user message only if user is still on this conversation
+    if (currentConversationIdRef.current === targetConvId) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === userMsgId)) return prev;
+        return [...prev, userMessage];
+      });
+    }
 
     setInputText('');
     setError(null);
@@ -202,18 +288,18 @@ export const JournalChat: React.FC<JournalChatProps> = ({
     try {
       // 1. Save user message to Firestore subcollection under verified UID
       await setDoc(
-        doc(db, 'users', user.uid, 'conversations', convId, 'messages', userMsgId),
+        doc(db, 'users', user.uid, 'conversations', targetConvId, 'messages', userMsgId),
         userMessage
       );
 
       // Auto update conversation title on first message (asynchronously non-blocking)
       const isFirstMessage = messages.length === 0;
       const computedTitle = isFirstMessage 
-        ? promptToSend.slice(0, 32).replace(/[^\w\s]/gi, '') + (promptToSend.length > 32 ? '...' : '')
+        ? promptToSend.slice(0, 32).replace(/[^\w\s]/gi, '').trim() + (promptToSend.length > 32 ? '...' : '')
         : undefined;
 
       const metaUpdatePromise = setDoc(
-        doc(db, 'users', user.uid, 'conversations', convId),
+        doc(db, 'users', user.uid, 'conversations', targetConvId),
         {
           userId: user.uid,
           updatedAt: Date.now(),
@@ -236,23 +322,23 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         createdAt: aiResponse.timestamp || Date.now(),
       };
 
-      // Immediately add assistant message to local React state before awaiting Firestore
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === assistantMsgId)) return prev;
-        return [...prev, assistantMessage];
-      });
-
-      // Immediately allow isGenerating to become false once response is received
-      setIsGenerating(false);
+      // Only update local UI state if user has not navigated away during generation
+      if (currentConversationIdRef.current === targetConvId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === assistantMsgId)) return prev;
+          return [...prev, assistantMessage];
+        });
+        setIsGenerating(false);
+      }
 
       // 3. Persist assistant response and updated metadata to Firestore in background (non-blocking for UI)
       Promise.all([
         setDoc(
-          doc(db, 'users', user.uid, 'conversations', convId, 'messages', assistantMsgId),
+          doc(db, 'users', user.uid, 'conversations', targetConvId, 'messages', assistantMsgId),
           assistantMessage
         ),
         setDoc(
-          doc(db, 'users', user.uid, 'conversations', convId),
+          doc(db, 'users', user.uid, 'conversations', targetConvId),
           {
             updatedAt: Date.now(),
             messageCount: messages.length + 2,
@@ -264,15 +350,46 @@ export const JournalChat: React.FC<JournalChatProps> = ({
       });
     } catch (err: any) {
       console.error('Failed to send message:', err);
-      setError(err.message || 'Error receiving Gemini response. Verify your connection.');
+      if (currentConversationIdRef.current === targetConvId) {
+        setError(err.message || 'Error receiving Gemini response. Verify your connection.');
+      }
     } finally {
-      setIsGenerating(false);
+      if (currentConversationIdRef.current === targetConvId) {
+        setIsGenerating(false);
+      }
     }
   };
 
-  // Generate automatic summary using Gemini and save to Firestore
+  // Generate or update automatic summary idempotently (at most 1 saved summary per conversation)
   const handleSummarizeSession = async () => {
-    if (!user || !currentConversationId || messages.length < 2) {
+    if (!user || !currentConversationId) {
+      setError('Please select or start a reflection session first.');
+      return;
+    }
+
+    let activeMessages = messages;
+    if (activeMessages.length === 0) {
+      try {
+        const msgsRef = collection(db, 'users', user.uid, 'conversations', currentConversationId, 'messages');
+        const msgsSnap = await getDocs(query(msgsRef, orderBy('createdAt', 'asc')));
+        if (!msgsSnap.empty) {
+          activeMessages = msgsSnap.docs.map((docSnap) => ({
+            id: docSnap.id,
+            ...(docSnap.data() as Omit<ChatMessage, 'id'>),
+          }));
+          setMessages(activeMessages);
+        }
+      } catch (fetchMsgErr) {
+        console.warn('Could not fetch messages from Firestore for summarization:', fetchMsgErr);
+      }
+    }
+
+    if (activeMessages.length === 0) {
+      setError('No messages found in this conversation to summarize.');
+      return;
+    }
+
+    if (activeMessages.length < 2) {
       setError('Please have at least 1 back-and-forth exchange before summarizing.');
       return;
     }
@@ -282,41 +399,171 @@ export const JournalChat: React.FC<JournalChatProps> = ({
 
     try {
       const activeConv = conversations.find((c) => c.id === currentConversationId);
+
+      // 1. Look up existing summary for this conversation to guarantee at most 1 saved summary
+      let existingSummary: SessionSummary | null = null;
+      const duplicateIdsToDelete: string[] = [];
+
+      // Check if conversation already has a linked summaryId
+      if (activeConv?.summaryId) {
+        try {
+          const sumDocSnap = await getDoc(doc(db, 'users', user.uid, 'summaries', activeConv.summaryId));
+          if (sumDocSnap.exists()) {
+            existingSummary = {
+              id: sumDocSnap.id,
+              ...(sumDocSnap.data() as Omit<SessionSummary, 'id'>),
+            };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not fetch summary by summaryId:', fetchErr);
+        }
+      }
+
+      // Check deterministic document ID users/{uid}/summaries/summary_conv_${currentConversationId}
+      if (!existingSummary) {
+        try {
+          const detDocSnap = await getDoc(doc(db, 'users', user.uid, 'summaries', `summary_conv_${currentConversationId}`));
+          if (detDocSnap.exists()) {
+            existingSummary = {
+              id: detDocSnap.id,
+              ...(detDocSnap.data() as Omit<SessionSummary, 'id'>),
+            };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not fetch summary by deterministic ID:', fetchErr);
+        }
+      }
+
+      // Query summaries collection where sourceType == 'conversation' and sourceId == currentConversationId
+      try {
+        const sumQuery = query(
+          collection(db, 'users', user.uid, 'summaries'),
+          where('sourceType', '==', 'conversation'),
+          where('sourceId', '==', currentConversationId)
+        );
+        const querySnap = await getDocs(sumQuery);
+        if (!querySnap.empty) {
+          const matchedSummaries: SessionSummary[] = querySnap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<SessionSummary, 'id'>),
+          }));
+
+          // Sort so the latest created/updated is prioritized
+          matchedSummaries.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+
+          if (!existingSummary) {
+            existingSummary = matchedSummaries[0];
+          }
+
+          // Mark any other duplicate documents for this conversation to be removed
+          const canonicalId = existingSummary.id;
+          for (const s of matchedSummaries) {
+            if (s.id !== canonicalId && !duplicateIdsToDelete.includes(s.id)) {
+              duplicateIdsToDelete.push(s.id);
+            }
+          }
+        }
+      } catch (queryErr) {
+        console.warn('Query for existing summaries encountered an error:', queryErr);
+      }
+
+      // 2. Check if any new messages have been added since the last summary
+      const recordedMessageCount = activeConv?.lastSummarizedMessageCount ?? existingSummary?.messageCount;
+      const hasSummaryContent = Boolean(existingSummary?.summaryText || activeConv?.summary);
+
+      // IDEMPOTENCY CHECK: If an existing summary exists and no new messages were added, keep/use existing summary
+      if (existingSummary && hasSummaryContent && recordedMessageCount !== undefined && recordedMessageCount === activeMessages.length) {
+        // Clean up any extraneous duplicate summaries in background
+        if (duplicateIdsToDelete.length > 0) {
+          duplicateIdsToDelete.forEach((dupId) => {
+            deleteDoc(doc(db, 'users', user.uid, 'summaries', dupId)).catch(() => {});
+          });
+        }
+
+        // Ensure conversation has synced summaryId & message count metadata if needed
+        if (
+          activeConv &&
+          (!activeConv.summaryId || activeConv.summaryId !== existingSummary.id || activeConv.lastSummarizedMessageCount !== activeMessages.length)
+        ) {
+          await setDoc(
+            doc(db, 'users', user.uid, 'conversations', currentConversationId),
+            {
+              summaryId: existingSummary.id,
+              summary: existingSummary.summaryText,
+              lastSummarizedMessageCount: activeMessages.length,
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch(() => {});
+        }
+
+        setSummaryNotification(`Session summary is already up to date for this conversation.`);
+        setTimeout(() => setSummaryNotification(null), 5000);
+
+        if (onSummaryGenerated) {
+          onSummaryGenerated(existingSummary);
+        }
+        setIsSummarizing(false);
+        return;
+      }
+
+      // 3. If new messages have been added or no summary exists yet, regenerate/update the single existing summary
       const summaryResult = await generateSummary({
         sourceType: 'conversation',
         sourceId: currentConversationId,
+        conversationId: currentConversationId,
         title: activeConv?.title || 'Journal Session',
-        messages,
+        messages: activeMessages,
       });
 
-      // Save summary in users/{uid}/summaries/{summaryId}
-      const summaryId = `summary_${Date.now()}`;
+      // Target document ID: reuse existing ID if available, otherwise deterministic ID
+      const summaryId = existingSummary?.id || activeConv?.summaryId || `summary_conv_${currentConversationId}`;
+
       const fullSummary: SessionSummary = {
         id: summaryId,
         userId: user.uid,
         sourceType: 'conversation',
         sourceId: currentConversationId,
         title: summaryResult.title || activeConv?.title || 'Session Summary',
-        summaryText: summaryResult.summaryText,
+        summaryText: summaryResult.summaryText || '',
         keyThemes: summaryResult.keyThemes || [],
         actionableTakeaways: summaryResult.actionableTakeaways || [],
-        moodTrend: summaryResult.moodTrend,
-        createdAt: Date.now(),
+        moodTrend: summaryResult.moodTrend || moodContext || 'Reflective',
+        createdAt: existingSummary?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+        messageCount: activeMessages.length,
       };
 
-      await setDoc(doc(db, 'users', user.uid, 'summaries', summaryId), fullSummary);
+      // Save/update the single summary document in users/{uid}/summaries/{summaryId}
+      await setDoc(doc(db, 'users', user.uid, 'summaries', summaryId), sanitizeForFirestore(fullSummary));
 
-      // Update conversation with summary snippet
+      // Clean up any duplicate records
+      if (duplicateIdsToDelete.length > 0) {
+        for (const dupId of duplicateIdsToDelete) {
+          if (dupId !== summaryId) {
+            await deleteDoc(doc(db, 'users', user.uid, 'summaries', dupId)).catch(() => {});
+          }
+        }
+      }
+
+      // Update conversation with summary snippet, summaryId, lastSummarizedMessageCount, and timestamp
       await setDoc(
         doc(db, 'users', user.uid, 'conversations', currentConversationId),
         {
           summary: summaryResult.summaryText,
+          summaryId: summaryId,
+          lastSummarizedMessageCount: activeMessages.length,
+          lastSummarizedAt: Date.now(),
           updatedAt: Date.now(),
         },
         { merge: true }
       );
 
-      setSummaryNotification(`Saved session summary: "${fullSummary.title}"`);
+      setSummaryNotification(
+        existingSummary 
+          ? `Updated session summary: "${fullSummary.title}" (${activeMessages.length} messages)`
+          : `Saved session summary: "${fullSummary.title}"`
+      );
       setTimeout(() => setSummaryNotification(null), 5000);
 
       if (onSummaryGenerated) {
@@ -364,35 +611,45 @@ export const JournalChat: React.FC<JournalChatProps> = ({
             conversations.map((conv) => {
               const isSelected = conv.id === currentConversationId;
               return (
-                <button
+                <div
                   key={conv.id}
-                  onClick={() => setCurrentConversationId(conv.id)}
-                  className={`w-full text-left p-3 rounded-xl transition-all border group ${
+                  onClick={() => handleSelectConversation(conv.id)}
+                  className={`w-full text-left p-3 rounded-xl transition-all border group cursor-pointer relative ${
                     isSelected
                       ? 'bg-slate-800/90 border-slate-700 shadow-md text-white'
                       : 'border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-1">
-                    <span className={`font-medium text-xs truncate max-w-[190px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={`font-medium text-xs truncate max-w-[160px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
                       {conv.title || 'Untitled Session'}
                     </span>
-                    <span className="text-[10px] text-slate-500 shrink-0 font-mono">
-                      {new Date(conv.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                    </span>
-                  </div>
-                  {conv.lastMessagePreview && (
-                    <p className="text-[11px] text-slate-400 truncate mt-1">
-                      {conv.lastMessagePreview}
-                    </p>
-                  )}
-                  {conv.summary && (
-                    <div className="mt-1.5 flex items-center gap-1 text-[10px] text-emerald-400 font-medium">
-                      <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
-                      <span className="truncate">Summarized</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {new Date(conv.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </span>
+                      <button
+                        id={`btn-delete-conv-${conv.id}`}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!isGenerating && !isDeleting) {
+                            setConversationToDelete(conv);
+                          }
+                        }}
+                        disabled={isGenerating || isDeleting}
+                        className={`p-1 rounded-md transition-colors ${
+                          isGenerating || isDeleting
+                            ? 'opacity-20 cursor-not-allowed text-slate-600'
+                            : 'text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-60 group-hover:opacity-100'
+                        }`}
+                        title={isGenerating ? 'Cannot delete while generating' : 'Delete session'}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                  )}
-                </button>
+                  </div>
+                </div>
               );
             })
           )}
@@ -401,7 +658,7 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         {/* Security verification stamp */}
         <div className="p-3 border-t border-slate-700/50 bg-slate-900/30 text-[11px] text-slate-400 flex items-center gap-2">
           <Lock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span>Vault: <code className="font-mono text-[10px] text-slate-300">users/{'{uid}'}/conversations</code></span>
+          <span>Private</span>
         </div>
       </aside>
 
@@ -419,8 +676,8 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                 <h3 className="text-sm font-semibold text-white">
                   {currentConv?.title || 'Private Reflection Session'}
                 </h3>
-                <span className="px-2 py-0.5 bg-slate-800 text-slate-400 text-[10px] rounded uppercase tracking-wider border border-slate-700 font-mono hidden sm:inline-block">
-                  AES-256 Cloud Vault
+                <span className="px-2 py-0.5 bg-slate-800 text-slate-400 text-[10px] rounded uppercase tracking-wider border border-slate-700 hidden sm:inline-block">
+                  Private & Secure
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
@@ -432,21 +689,60 @@ export const JournalChat: React.FC<JournalChatProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* New Session on mobile */}
+            <button
+              id="btn-new-conversation-mobile"
+              onClick={handleNewConversation}
+              className="md:hidden flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-colors shadow-xs"
+              title="Start a new reflection session"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New</span>
+            </button>
+
             {/* Automatic Summarize Action */}
             <button
               id="btn-summarize-session"
               onClick={handleSummarizeSession}
               disabled={isSummarizing || messages.length < 2}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700/80 text-slate-200 rounded-xl border border-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
-              title="Automatically extract summary, key themes, and takeaways using Gemini"
+              title={
+                currentConv?.summary && currentConv.lastSummarizedMessageCount === messages.length
+                  ? "Session summary is up to date (click to view/keep)"
+                  : "Automatically extract summary, key themes, and takeaways using Gemini"
+              }
             >
               {isSummarizing ? (
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
               ) : (
                 <FileText className="w-3.5 h-3.5 text-cyan-400" />
               )}
-              <span>{isSummarizing ? 'Summarizing...' : 'Summarize Session'}</span>
+              <span className="hidden sm:inline">
+                {isSummarizing 
+                  ? 'Summarizing...' 
+                  : currentConv?.summary && currentConv.lastSummarizedMessageCount === messages.length
+                    ? 'Summarized'
+                    : 'Summarize'}
+              </span>
             </button>
+
+            {/* Delete Active Session Action */}
+            {currentConv && (
+              <button
+                id="btn-delete-active-session"
+                onClick={() => {
+                  if (!isGenerating && !isDeleting) {
+                    setConversationToDelete(currentConv);
+                  }
+                }}
+                disabled={isGenerating || isDeleting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-rose-950/40 hover:text-rose-300 hover:border-rose-800/60 text-slate-400 rounded-xl border border-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                title={isGenerating ? 'Cannot delete while generating' : 'Delete this conversation session'}
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -517,7 +813,7 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                     <div className="max-w-[75%] bg-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-lg shadow-blue-600/10">
                       <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.text}</p>
                       <p className="text-[10px] text-blue-200 mt-2 text-right">
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • Private
+                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
                   ) : (
@@ -624,6 +920,92 @@ export const JournalChat: React.FC<JournalChatProps> = ({
           </div>
         </footer>
       </main>
+
+      {/* Delete Conversation Confirmation Modal */}
+      {conversationToDelete && (
+        <div
+          id="modal-delete-conversation-backdrop"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            if (!isDeleting) setConversationToDelete(null);
+          }}
+        >
+          <div
+            id="modal-delete-conversation"
+            className="bg-[#1E293B] border border-slate-700/90 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-white">
+                    Delete “{conversationToDelete.title || 'Untitled Session'}”?
+                  </h3>
+                </div>
+              </div>
+              <button
+                id="btn-close-delete-modal"
+                onClick={() => {
+                  if (!isDeleting) setConversationToDelete(null);
+                }}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-sm text-slate-300">
+              <p className="leading-relaxed">
+                This will permanently delete this conversation and its messages. Journal Entries and Saved Summaries will not be affected.
+              </p>
+            </div>
+
+            {isGenerating && (
+              <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-xs text-amber-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>Gemini is currently generating a response. Please wait for generation to finish before deleting.</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                id="btn-cancel-delete-conv"
+                type="button"
+                onClick={() => {
+                  if (!isDeleting) setConversationToDelete(null);
+                }}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                id="btn-confirm-delete-conv"
+                type="button"
+                onClick={() => handleDeleteConversation(conversationToDelete)}
+                disabled={isDeleting || isGenerating}
+                className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-xl transition-colors shadow-lg shadow-rose-600/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting Session...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Session</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

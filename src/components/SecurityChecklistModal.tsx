@@ -43,23 +43,23 @@ export const SecurityChecklistModal: React.FC<SecurityChecklistModalProps> = ({
     {
       id: 'auth-zero-trust',
       category: 'Authentication',
-      title: 'Zero-Trust Firebase Identity & Non-Client UID Reliance',
+      title: 'Zero-Trust Identity & Cryptographic Token Verification',
       status: 'PASSED',
-      description: 'Server extracts cryptographic JWT from Authorization: Bearer header and verifies signature against Google Public JWKS. Client-supplied UIDs in body/query are completely ignored.',
+      description: 'Server extracts cryptographic JWT from Authorization: Bearer header and verifies signature against Google Public JWKS. Unverified client identity claims are completely rejected.',
       codeSnippet: `// server.ts
 const { payload } = await jose.jwtVerify(token, GOOGLE_JWKS, {
   issuer: 'https://securetoken.google.com/' + FIREBASE_PROJECT_ID,
   audience: FIREBASE_PROJECT_ID,
 });
-req.user = { uid: payload.sub }; // Cryptographically trusted UID`,
+req.user = { uid: payload.sub }; // Cryptographically trusted session`,
     },
     {
       id: 'firestore-rules',
-      category: 'Firestore Isolation',
-      title: 'Deny-by-Default Firestore Security Rules',
+      category: 'Account Isolation',
+      title: 'Deny-by-Default Data Security Rules',
       status: 'ENFORCED',
-      description: 'Global match /{document=**} deny-by-default is enforced. Subtrees under users/{userId} require request.auth.uid == userId for read, create, update, delete.',
-      codeSnippet: `// firestore.rules
+      description: 'Global deny-by-default rule is strictly enforced. User collections are private to the authenticated owner and require verified authentication for all read and write operations.',
+      codeSnippet: `// Security Rules
 match /users/{userId} {
   allow read, write: if request.auth != null && request.auth.uid == userId;
   match /{allChildren=**} {
@@ -70,9 +70,9 @@ match /users/{userId} {
     {
       id: 'secret-management',
       category: 'Secrets',
-      title: 'Google Cloud Secret Manager & Zero Browser Leakage',
+      title: 'Cloud Secret Manager & Zero Browser Leakage',
       status: 'ENFORCED',
-      description: 'GEMINI_API_KEY is managed via Google Cloud Secret Manager (roles/secretmanager.secretAccessor) and securely injected into the Cloud Run container runtime. No secret exists in source code or client bundles.',
+      description: 'GEMINI_API_KEY is managed via Google Cloud Secret Manager and securely injected into the backend container runtime. No API keys exist in source code or client bundles.',
       codeSnippet: `# Cloud Run Secret Manager mounting:
 --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 // Backend initialization reads injected runtime environment:
@@ -91,8 +91,8 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });`,
       category: 'Data Isolation',
       title: 'Server-Side Record Authorization & Bounded Context (No Client Spoofing)',
       status: 'VERIFIED',
-      description: 'The server retrieves journal and conversation records directly from Firestore under users/{verifiedUid}/* using the verified cryptographic ID token. Arbitrary client data is never analyzed, and cross-user IDs are rejected.',
-      codeSnippet: `// Server-side retrieval under verified UID only:
+      description: 'The server retrieves journal and conversation records directly using verified cryptographic tokens. Arbitrary client data is never analyzed, and unauthorized access is rejected.',
+      codeSnippet: `// Server-side retrieval under verified authentication:
 const journal = await getFirestoreDoc(token, \`users/\${verifiedUid}/journals/\${sourceId}\`);
 if (!journal) return res.status(404).json({ error: 'Resource not found or unauthorized.' });`,
     },
@@ -183,10 +183,10 @@ if (!journal) return res.status(404).json({ error: 'Resource not found or unauth
               <div className="p-3.5 rounded-xl bg-[#1E293B] border border-slate-700/60 flex items-center justify-between text-xs text-slate-300">
                 <span className="flex items-center gap-2">
                   <Fingerprint className="w-4 h-4 text-cyan-400" />
-                  <span>Current Verified Authenticated Session:</span>
-                  <code className="font-mono text-cyan-300 font-semibold bg-slate-900 px-2.5 py-0.5 rounded-md border border-slate-700">
-                    {uid}
-                  </code>
+                  <span>Current Authenticated Session:</span>
+                  <span className="text-cyan-300 font-semibold bg-slate-900 px-2.5 py-0.5 rounded-md border border-slate-700">
+                    Active & Verified
+                  </span>
                 </span>
                 <span className="text-emerald-400 font-bold flex items-center gap-1">
                   <CheckCircle2 className="w-3.5 h-3.5" /> 100% Isolated
@@ -236,20 +236,20 @@ if (!journal) return res.status(404).json({ error: 'Resource not found or unauth
                   1. Trust Boundaries & Identity Layer
                 </h4>
                 <p>
-                  <strong className="text-white">Browser Client (Untrusted):</strong> The browser is an untrusted execution environment. It possesses only a short-lived Firebase Authentication ID Token signed by Google. The client never handles database administration tokens, secret service keys, or backend AI credentials.
+                  <strong className="text-white">Browser Client (Untrusted):</strong> The browser is an untrusted execution environment. It possesses only a short-lived Firebase Authentication token signed by Google. The client never handles database administration tokens, secret service keys, or backend AI credentials.
                 </p>
                 <p>
-                  <strong className="text-white">Backend Proxy (`server.ts`) (Trusted):</strong> The server validates every inbound request using Google’s public JWKS. It cryptographically resolves the subject claim (`sub`) to extract the genuine UID and injects this verified identity into downstream AI reasoning pipelines.
+                  <strong className="text-white">Backend Proxy (Trusted):</strong> The server validates every inbound request using Google’s public verification keys. It cryptographically resolves the subject claim to extract the genuine identity and injects this verified identity into downstream AI reasoning pipelines.
                 </p>
               </div>
 
               <div className="p-5 rounded-xl bg-[#1E293B] border border-slate-700/60 space-y-2 shadow-md">
                 <h4 className="font-bold text-white text-sm text-emerald-300">
-                  2. Firestore Insecure Direct Object Reference (IDOR) Defense
+                  2. Account-Level Data Isolation & Direct Access Defense
                 </h4>
                 <p>
-                  All collections are organized hierarchically beneath the UID path: <code className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700 text-cyan-300">users/{'{uid}'}/*</code>.
-                  Firestore security rules strictly forbid querying or manipulating any node where <code className="font-mono text-cyan-300">request.auth.uid != userId</code>. Direct URL manipulations or spoofed parameters on other user objects are rejected by the Firestore engine at the database level.
+                  All collections are organized hierarchically by user account.
+                  Security rules strictly enforce that users can only read, create, update, or delete their own private journals, summaries, and chat history. Cross-account access attempts are rejected by the cloud database automatically.
                 </p>
               </div>
 

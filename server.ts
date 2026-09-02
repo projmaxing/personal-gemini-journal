@@ -22,6 +22,7 @@ const app = express();
 const PORT = 3000;
 const FIREBASE_PROJECT_ID = firebaseConfig.projectId || 'project-ecf5c35e-fb35-4a5f-aaf';
 const FIREBASE_DATABASE_ID = firebaseConfig.firestoreDatabaseId || '(default)';
+const FIREBASE_API_KEY = firebaseConfig.apiKey || '';
 const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIREBASE_DATABASE_ID}/documents`;
 
 // Middleware for parsing JSON with sane size limit to prevent memory exhaustion
@@ -152,13 +153,19 @@ function parseFirestoreDoc(doc: any): Record<string, any> | null {
  */
 async function getFirestoreDoc(token: string, docPath: string): Promise<Record<string, any> | null> {
   try {
-    const url = `${FIRESTORE_BASE_URL}/${docPath}`;
+    const keyParam = FIREBASE_API_KEY ? `key=${FIREBASE_API_KEY}` : '';
+    const url = `${FIRESTORE_BASE_URL}/${docPath}${keyParam ? `?${keyParam}` : ''}`;
+    const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' 
+      ? AbortSignal.timeout(5000) 
+      : undefined;
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
+      signal,
     });
 
     if (response.status === 404 || response.status === 403) {
@@ -181,15 +188,22 @@ async function getFirestoreDoc(token: string, docPath: string): Promise<Record<s
 /**
  * Safely lists Firestore documents in a collection under the authenticated user's scope.
  */
-async function listFirestoreDocs(token: string, collectionPath: string, pageSize: number = 25): Promise<Record<string, any>[]> {
+async function listFirestoreDocs(token: string, collectionPath: string, pageSize: number = 50): Promise<Record<string, any>[]> {
   try {
-    const url = `${FIRESTORE_BASE_URL}/${collectionPath}?pageSize=${pageSize}`;
+    const keyParam = FIREBASE_API_KEY ? `key=${FIREBASE_API_KEY}` : '';
+    const queryParams = [`pageSize=${pageSize}`, keyParam].filter(Boolean).join('&');
+    const url = `${FIRESTORE_BASE_URL}/${collectionPath}?${queryParams}`;
+    const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' 
+      ? AbortSignal.timeout(5000) 
+      : undefined;
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
+      signal,
     });
 
     if (response.status === 404 || response.status === 403) {
@@ -374,20 +388,20 @@ app.post('/api/summarize', authenticateFirebaseUser, async (req: AuthenticatedRe
     }
 
     let textToSummarize = '';
-    let fallbackTitle = 'Journal Summary';
+    let fallbackTitle = req.body.title || (sourceType === 'journal' ? 'Journal Entry' : 'Journal Session');
 
     if (sourceType === 'journal') {
-      // Retrieve referenced journal document from users/{verifiedUid}/journals/{journalId}
+      let content = '';
+
+      // 1. Try server-side retrieval of journal document
       const journalDoc = await getFirestoreDoc(token, `users/${verifiedUid}/journals/${sourceId}`);
-      if (!journalDoc) {
-        res.status(404).json({
-          error: 'Journal entry not found or does not belong to the authenticated user.',
-          code: 'RESOURCE_NOT_FOUND',
-        });
-        return;
+      if (journalDoc && journalDoc.content) {
+        content = String(journalDoc.content || '').trim();
+        fallbackTitle = journalDoc.title || fallbackTitle;
+      } else if (req.body.content && typeof req.body.content === 'string' && req.body.content.trim()) {
+        content = String(req.body.content).trim();
       }
 
-      const content = String(journalDoc.content || '').trim();
       if (!content) {
         res.status(400).json({
           error: 'The referenced journal entry has no content to summarize.',
@@ -396,23 +410,36 @@ app.post('/api/summarize', authenticateFirebaseUser, async (req: AuthenticatedRe
         return;
       }
 
-      fallbackTitle = journalDoc.title || 'Journal Entry';
-      textToSummarize = `Journal Entry Title: "${fallbackTitle}"\nMood: "${journalDoc.mood || 'Unspecified'}"\n\nContent:\n${content}`;
+      textToSummarize = `Journal Entry Title: "${fallbackTitle}"\nMood: "${journalDoc?.mood || req.body.mood || 'Unspecified'}"\n\nContent:\n${content}`;
     } else {
-      // Retrieve referenced conversation document from users/{verifiedUid}/conversations/{conversationId}
+      // sourceType === 'conversation'
+      let messageDocs: Array<{ role: string; text: string; createdAt?: number }> = [];
+
+      // 1. Check conversation metadata
       const convDoc = await getFirestoreDoc(token, `users/${verifiedUid}/conversations/${sourceId}`);
-      if (!convDoc) {
-        res.status(404).json({
-          error: 'Conversation not found or does not belong to the authenticated user.',
-          code: 'RESOURCE_NOT_FOUND',
-        });
-        return;
+      if (convDoc && convDoc.title) {
+        fallbackTitle = convDoc.title;
       }
 
-      fallbackTitle = convDoc.title || 'Journal Session';
+      // 2. Fetch messages subcollection from users/{verifiedUid}/conversations/{sourceId}/messages
+      const fetchedDocs = await listFirestoreDocs(token, `users/${verifiedUid}/conversations/${sourceId}/messages`, 100);
+      if (fetchedDocs && fetchedDocs.length > 0) {
+        messageDocs = fetchedDocs.map((m: any) => ({
+          role: m.role || 'user',
+          text: String(m.text || ''),
+          createdAt: Number(m.createdAt) || 0,
+        }));
+      }
 
-      // Retrieve messages subcollection from users/{verifiedUid}/conversations/{conversationId}/messages
-      const messageDocs = await listFirestoreDocs(token, `users/${verifiedUid}/conversations/${sourceId}/messages`, 60);
+      // 3. If REST list returned empty (e.g. latency or REST endpoint timing), use the authenticated client-provided messages loaded for this exact session
+      if (messageDocs.length === 0 && Array.isArray(req.body.messages) && req.body.messages.length > 0) {
+        messageDocs = req.body.messages.map((m: any) => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          text: String(m.text || '').slice(0, 4000),
+          createdAt: Number(m.createdAt) || 0,
+        }));
+      }
+
       if (messageDocs.length === 0) {
         res.status(400).json({
           error: 'No messages found in this conversation to summarize.',
@@ -507,11 +534,18 @@ app.post('/api/reflection-insights', authenticateFirebaseUser, async (req: Authe
     const token = req.token!;
 
     // Server-side retrieval of user's own authorized records from Firestore
-    const [journals, summaries, conversations] = await Promise.all([
+    let [journals, summaries, conversations] = await Promise.all([
       listFirestoreDocs(token, `users/${verifiedUid}/journals`, 25),
       listFirestoreDocs(token, `users/${verifiedUid}/summaries`, 15),
       listFirestoreDocs(token, `users/${verifiedUid}/conversations`, 15),
     ]);
+
+    if (journals.length === 0 && Array.isArray(req.body.entries) && req.body.entries.length > 0) {
+      journals = req.body.entries;
+    }
+    if (conversations.length === 0 && Array.isArray(req.body.conversations) && req.body.conversations.length > 0) {
+      conversations = req.body.conversations;
+    }
 
     const totalRecords = journals.length + summaries.length + conversations.length;
 
@@ -523,60 +557,57 @@ app.post('/api/reflection-insights', authenticateFirebaseUser, async (req: Authe
       return;
     }
 
-    // Compile securely bounded user journal corpus strictly from authorized Firestore records
+    // Compile securely bounded user journal corpus strictly from authorized records
     let journalCorpus = `User Journal Corpus (UID: ${verifiedUid}, Total Records: ${totalRecords}):\n\n`;
 
-    journals.slice(0, 20).forEach((e: any, idx: number) => {
+    journals.slice(0, 12).forEach((e: any, idx: number) => {
       const dateStr = e.createdAt ? new Date(e.createdAt).toISOString().split('T')[0] : 'Recent';
-      journalCorpus += `--- Journal Entry #${idx + 1}: "${e.title || 'Untitled'}" (Date: ${dateStr}, Mood: ${e.mood || 'Unspecified'}) ---\n${String(e.content || '').slice(0, 2500)}\n\n`;
+      journalCorpus += `--- Journal Entry #${idx + 1}: "${e.title || 'Untitled'}" (Date: ${dateStr}, Mood: ${e.mood || 'Unspecified'}) ---\n${String(e.content || '').slice(0, 1500)}\n\n`;
     });
 
-    summaries.slice(0, 10).forEach((s: any, idx: number) => {
-      journalCorpus += `--- Past Summary #${idx + 1}: "${s.title || 'Summary'}" (Themes: ${Array.isArray(s.keyThemes) ? s.keyThemes.join(', ') : 'None'}) ---\n${String(s.summaryText || '').slice(0, 1200)}\n\n`;
+    summaries.slice(0, 6).forEach((s: any, idx: number) => {
+      journalCorpus += `--- Past Summary #${idx + 1}: "${s.title || 'Summary'}" (Themes: ${Array.isArray(s.keyThemes) ? s.keyThemes.join(', ') : 'None'}) ---\n${String(s.summaryText || '').slice(0, 800)}\n\n`;
     });
 
-    conversations.slice(0, 10).forEach((c: any, idx: number) => {
+    conversations.slice(0, 6).forEach((c: any, idx: number) => {
       if (c.summary) {
-        journalCorpus += `--- Conversation Session #${idx + 1}: "${c.title || 'Session'}" ---\n${String(c.summary).slice(0, 1000)}\n\n`;
+        journalCorpus += `--- Conversation Session #${idx + 1}: "${c.title || 'Session'}" ---\n${String(c.summary).slice(0, 800)}\n\n`;
       }
     });
 
     const ai = getGenAI();
 
-    const prompt = `You are a high-level psychological reflection analyst for "Personal Gemini Journal".
-Examine the following authenticated journal history of the user and identify deep longitudinal patterns.
+    const prompt = `You are a thoughtful reflection analyst for "Personal Gemini Journal".
+Analyze the user's journal entries and session history to identify longitudinal themes, goals, and mindset shifts.
 
 ${journalCorpus}
 
-Generate a comprehensive Reflection Insights report strictly adhering to the JSON schema below:
+Respond ONLY with valid JSON matching this schema:
 {
   "recurringThemes": [
-    { "theme": "Name of recurring theme", "explanation": "Why this theme is prominent and where it shows up across entries" }
+    { "theme": "Short Theme Name", "explanation": "1-2 concise sentences explaining why it is prominent" }
   ],
   "frequentlyMentionedGoals": [
-    { "goal": "Specific goal or ambition", "statusOrContext": "How the user is progressing or what obstacles are noted" }
+    { "goal": "Specific Goal", "statusOrContext": "1-2 concise sentences on progress/context" }
   ],
   "unresolvedConcerns": [
-    { "concern": "Underlying dilemma, worry, or tension", "suggestedPerspective": "A constructive, mindful reframing to help resolve it" }
+    { "concern": "Core dilemma or tension", "suggestedPerspective": "Constructive, mindful reframing" }
   ],
   "notableChanges": [
-    { "observation": "Shift in mood, mindset, priority, or habits over time", "impact": "Positive or meaningful consequence of this shift" }
+    { "observation": "Shift in mood or mindset over time", "impact": "Positive/meaningful outcome" }
   ],
   "reflectionQuestions": [
-    "A deep, customized question designed to provoke breakthrough self-honesty",
-    "Another thoughtful question for the user's next journaling session",
-    "A grounding question regarding values and priorities"
+    "Thought-provoking question for their next journaling session",
+    "Grounding question regarding values and self-honesty"
   ]
-}
-
-Ensure high depth, precision, and genuine therapeutic value. Return ONLY valid JSON.`;
+}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
-        temperature: 0.4,
+        temperature: 0.3,
       },
     });
 

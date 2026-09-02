@@ -100,9 +100,9 @@ export const AuthScreen: React.FC = () => {
           <div className="mb-6 p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 text-xs text-slate-300 flex items-start gap-2.5">
             <Lock className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <div>
-              <span className="font-semibold text-white">End-to-End User Isolation:</span>
+              <span className="font-semibold text-white">Private & Isolated Storage:</span>
               <p className="mt-0.5 text-slate-400">
-                Entries are locked under your verified Firebase UID (<code className="font-mono text-[10px] bg-slate-800 text-cyan-300 px-1 py-0.5 rounded">users/{'{uid}'}/*</code>) with deny-by-default rules.
+                Your entries and conversations are strictly private and accessible only when signed into your account.
               </p>
             </div>
           </div>
@@ -234,7 +234,7 @@ export const AuthScreen: React.FC = () => {
             className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800/60 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-medium border border-slate-700 transition-colors"
           >
             <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Continue as Verified Guest (Unique Anonymous UID)</span>
+            <span>Continue as Guest</span>
           </button>
         </div>
 

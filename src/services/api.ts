@@ -2,9 +2,9 @@ import { getAuthToken } from '../firebase/config';
 import { ChatMessage, SessionSummary, ReflectionInsights, JournalEntry, Conversation } from '../types';
 
 /**
- * Helper to fetch with authenticated Firebase ID token with 30s timeout
+ * Helper to fetch with authenticated Firebase ID token with customizable timeout
  */
-async function fetchWithAuth(url: string, options: RequestInit = {}, timeoutMs = 30000) {
+async function fetchWithAuth(url: string, options: RequestInit = {}, timeoutMs = 60000) {
   const token = await getAuthToken();
   if (!token) {
     throw new Error('User is not authenticated. Operation denied.');
@@ -79,6 +79,12 @@ export async function generateSummary(params: {
       journalEntryId: params.sourceType === 'journal' ? (params.journalEntryId || params.sourceId) : undefined,
       conversationId: params.sourceType === 'conversation' ? (params.conversationId || params.sourceId) : undefined,
       title: params.title,
+      content: params.content,
+      messages: params.messages?.map((m) => ({
+        role: m.role,
+        text: m.text,
+        createdAt: m.createdAt,
+      })),
     }),
   });
 }
@@ -88,13 +94,32 @@ export async function generateSummary(params: {
  * Server fetches verified user's authorized records from Firestore directly.
  */
 export async function fetchReflectionInsights(
-  _entries?: JournalEntry[],
-  _conversations?: Conversation[]
+  entries?: JournalEntry[],
+  conversations?: Conversation[]
 ): Promise<ReflectionInsights> {
-  return fetchWithAuth('/api/reflection-insights', {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
+  return fetchWithAuth(
+    '/api/reflection-insights',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        entries: entries?.map((e) => ({
+          id: e.id,
+          title: e.title,
+          content: e.content,
+          mood: e.mood,
+          createdAt: e.createdAt,
+        })),
+        conversations: conversations?.map((c) => ({
+          id: c.id,
+          title: c.title,
+          summary: c.summary,
+          messageCount: c.messageCount,
+          updatedAt: c.updatedAt,
+        })),
+      }),
+    },
+    90000
+  );
 }
 
 /**

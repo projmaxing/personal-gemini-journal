@@ -9,7 +9,8 @@ import {
   deleteDoc, 
   query, 
   orderBy, 
-  onSnapshot 
+  onSnapshot,
+  sanitizeForFirestore 
 } from '../firebase/config';
 import { generateSummary } from '../services/api';
 import { JournalEntry, SessionSummary } from '../types';
@@ -50,7 +51,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [mood, setMood] = useState('Reflective');
-  const [tagsInput, setTagsInput] = useState('');
   const [autoSummarizeOnSave, setAutoSummarizeOnSave] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -91,7 +91,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
     setTitle('');
     setContent('');
     setMood('Reflective');
-    setTagsInput('');
     setIsEditing(true);
     setError(null);
   };
@@ -109,13 +108,8 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
 
     try {
       const entryId = selectedEntry ? selectedEntry.id : `entry_${Date.now()}`;
-      const tags = tagsInput
-        .split(',')
-        .map((t) => t.trim().toLowerCase())
-        .filter((t) => t.length > 0);
-
       const wordCount = content.trim().split(/\s+/).length;
-      let aiSummary = selectedEntry?.summary;
+      let aiSummary = selectedEntry?.summary || '';
 
       const entryData: JournalEntry = {
         id: entryId,
@@ -123,7 +117,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
         title: title.trim() || 'Untitled Reflection',
         content: content.trim(),
         mood,
-        tags,
+        tags: selectedEntry?.tags || [],
         summary: aiSummary,
         wordCount,
         createdAt: selectedEntry ? selectedEntry.createdAt : Date.now(),
@@ -131,7 +125,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
       };
 
       // 1. Save directly into isolated collection: users/{uid}/journals/{entryId} first
-      await setDoc(doc(db, 'users', user.uid, 'journals', entryId), entryData);
+      await setDoc(doc(db, 'users', user.uid, 'journals', entryId), sanitizeForFirestore(entryData));
 
       // 2. Automatically generate AI Summary if requested (server fetches the saved entry directly from Firestore)
       if (autoSummarizeOnSave && content.length > 50) {
@@ -141,6 +135,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
             sourceId: entryId,
             journalEntryId: entryId,
             title: entryData.title,
+            content: entryData.content,
           });
           aiSummary = summaryRes.summaryText;
           entryData.summary = aiSummary;
@@ -152,21 +147,22 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
           });
 
           // Also save in user's summaries collection
-          const summaryId = `summary_${Date.now()}`;
+          const summaryId = `summary_journal_${entryId}`;
           const fullSummary: SessionSummary = {
             id: summaryId,
             userId: user.uid,
             sourceType: 'journal',
             sourceId: entryId,
             title: summaryRes.title || entryData.title,
-            summaryText: summaryRes.summaryText,
+            summaryText: summaryRes.summaryText || '',
             keyThemes: summaryRes.keyThemes || [],
             actionableTakeaways: summaryRes.actionableTakeaways || [],
-            moodTrend: summaryRes.moodTrend,
+            moodTrend: summaryRes.moodTrend || mood || 'Reflective',
             createdAt: Date.now(),
+            updatedAt: Date.now(),
           };
 
-          await setDoc(doc(db, 'users', user.uid, 'summaries', summaryId), fullSummary);
+          await setDoc(doc(db, 'users', user.uid, 'summaries', summaryId), sanitizeForFirestore(fullSummary));
           if (onSummaryCreated) onSummaryCreated(fullSummary);
         } catch (sumErr) {
           console.warn('Auto-summary failed but entry was saved securely:', sumErr);
@@ -175,11 +171,11 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
 
       setSelectedEntry(entryData);
       setIsEditing(false);
-      setSuccessMessage('Journal entry saved and isolated securely.');
+      setSuccessMessage('Journal entry saved privately.');
       setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {
       console.error('Error saving journal entry:', err);
-      setError(err.message || 'Failed to save entry to Firestore.');
+      setError(err.message || 'Failed to save entry. Please try again.');
     } finally {
       setIsSaving(false);
     }
@@ -191,6 +187,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
 
     try {
       await deleteDoc(doc(db, 'users', user.uid, 'journals', entryId));
+      await deleteDoc(doc(db, 'users', user.uid, 'summaries', `summary_journal_${entryId}`)).catch(() => {});
       if (selectedEntry?.id === entryId) {
         setSelectedEntry(null);
         setIsEditing(false);
@@ -239,7 +236,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-3" />
             <input
               type="text"
-              placeholder="Search thoughts, tags, moods..."
+              placeholder="Search thoughts or moods..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
@@ -312,7 +309,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
         {/* Isolation Footer */}
         <div className="p-3 border-t border-slate-700/50 bg-slate-900/30 text-[11px] text-slate-400 flex items-center gap-2">
           <Lock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span>Storage: <code className="font-mono text-[10px] text-slate-300">users/{'{uid}'}/journals</code></span>
+          <span>Private</span>
         </div>
       </aside>
 
@@ -403,20 +400,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
               </div>
             </div>
 
-            {/* Tags */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1">
-                Tags <span className="text-slate-500 font-normal">(comma-separated)</span>
-              </label>
-              <input
-                type="text"
-                placeholder="clarity, career, mindfulness, family"
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
-                className="w-full px-3.5 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-              />
-            </div>
-
             {/* Content Area */}
             <div className="flex-1 flex flex-col">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1 flex items-center justify-between">
@@ -429,7 +412,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
                 id="input-entry-content"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your honest, private reflection here. All content is stored in your private Firestore bucket..."
+                placeholder="Write your honest, private reflection here. All content is stored securely in your private journal..."
                 className="flex-1 w-full min-h-[300px] p-4 text-sm leading-relaxed bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all resize-none font-sans"
               />
             </div>
@@ -490,7 +473,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
                     setTitle(selectedEntry.title);
                     setContent(selectedEntry.content);
                     setMood(selectedEntry.mood || 'Reflective');
-                    setTagsInput(selectedEntry.tags ? selectedEntry.tags.join(', ') : '');
                     setIsEditing(true);
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700/80 rounded-xl transition-colors border border-slate-700"

@@ -24,6 +24,9 @@ export interface Conversation {
   userId: string;
   title: string;
   summary?: string;
+  summaryId?: string;
+  lastSummarizedMessageCount?: number;
+  lastSummarizedAt?: number;
   messageCount: number;
   createdAt: number;
   updatedAt: number;
@@ -41,6 +44,8 @@ export interface SessionSummary {
   actionableTakeaways: string[];
   moodTrend?: string;
   createdAt: number;
+  updatedAt?: number;
+  messageCount?: number;
 }
 
 export interface ReflectionInsights {

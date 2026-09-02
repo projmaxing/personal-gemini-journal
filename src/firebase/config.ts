@@ -21,6 +21,7 @@ import {
   updateDoc, 
   deleteDoc, 
   query, 
+  where,
   orderBy, 
   limit, 
   onSnapshot,
@@ -79,6 +80,21 @@ export const onAuthStatusChange = (callback: (user: User | null) => void) => {
   return onAuthStateChanged(auth, callback);
 };
 
+/**
+ * Removes undefined fields from objects before sending to Firestore to prevent SDK errors
+ */
+export function sanitizeForFirestore<T extends Record<string, any>>(obj: T): T {
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      clean[key] = value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? sanitizeForFirestore(value)
+        : value;
+    }
+  }
+  return clean as T;
+}
+
 export type { User };
 export { 
   onAuthStateChanged,
@@ -91,6 +107,7 @@ export {
   updateDoc,
   deleteDoc,
   query,
+  where,
   orderBy,
   limit,
   onSnapshot,

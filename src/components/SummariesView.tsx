@@ -74,20 +74,17 @@ export const SummariesView: React.FC<SummariesViewProps> = ({ user, onNavigateTo
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-white tracking-tight">
-              Saved Summaries & Takeaways
+              Saved Summaries
             </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-500/10 text-cyan-400 border border-cyan-500/20">
-              AI-Synthesized
-            </span>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Automatically extracted breakthroughs, key themes, and action items stored strictly under your private account.
+            Key themes and takeaways from your reflections.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
           <Lock className="w-3.5 h-3.5 text-emerald-400" />
-          <span>users/{user.uid.slice(0, 8)}.../summaries</span>
+          <span>Private</span>
         </div>
       </div>
 
