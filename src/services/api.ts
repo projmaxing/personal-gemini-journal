@@ -2,9 +2,9 @@ import { getAuthToken } from '../firebase/config';
 import { ChatMessage, SessionSummary, ReflectionInsights, JournalEntry, Conversation } from '../types';
 
 /**
- * Helper to fetch with authenticated Firebase ID token
+ * Helper to fetch with authenticated Firebase ID token with 30s timeout
  */
-async function fetchWithAuth(url: string, options: RequestInit = {}) {
+async function fetchWithAuth(url: string, options: RequestInit = {}, timeoutMs = 30000) {
   const token = await getAuthToken();
   if (!token) {
     throw new Error('User is not authenticated. Operation denied.');
@@ -14,10 +14,24 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
   headers.set('Authorization', `Bearer ${token}`);
   headers.set('Content-Type', 'application/json');
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  let signal = options.signal;
+  if (!signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    signal = AbortSignal.timeout(timeoutMs);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      signal,
+    });
+  } catch (err: any) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error('The request timed out while waiting for a response. Please try again.');
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));

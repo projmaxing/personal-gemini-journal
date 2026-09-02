@@ -59,6 +59,9 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const currentConversationIdRef = useRef<string | null>(null);
+  currentConversationIdRef.current = currentConversationId;
+
   // Auto-scroll to bottom of chat
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -67,6 +70,11 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages, isGenerating]);
+
+  // Clear composer text whenever active conversation changes to prevent draft leakage across sessions
+  useEffect(() => {
+    setInputText('');
+  }, [currentConversationId]);
 
   // Load user's conversations list from Firestore: users/{uid}/conversations
   useEffect(() => {
@@ -83,10 +91,11 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         }));
         setConversations(loaded);
 
-        // If no conversation selected and conversations exist, select first; else create new
-        if (!currentConversationId && loaded.length > 0) {
+        // Use ref to avoid stale closure of currentConversationId
+        const activeId = currentConversationIdRef.current;
+        if (!activeId && loaded.length > 0) {
           setCurrentConversationId(loaded[0].id);
-        } else if (loaded.length === 0 && !currentConversationId) {
+        } else if (loaded.length === 0 && !activeId) {
           handleNewConversation();
         }
       },
@@ -116,7 +125,15 @@ export const JournalChat: React.FC<JournalChatProps> = ({
           id: docSnap.id,
           ...(docSnap.data() as Omit<ChatMessage, 'id'>),
         }));
-        setMessages(loadedMsgs);
+
+        setMessages((prev) => {
+          const loadedIds = new Set(loadedMsgs.map((m) => m.id));
+          const pendingOptimistic = prev.filter((m) => !loadedIds.has(m.id));
+          if (pendingOptimistic.length === 0) {
+            return loadedMsgs;
+          }
+          return [...loadedMsgs, ...pendingOptimistic].sort((a, b) => a.createdAt - b.createdAt);
+        });
       },
       (err) => {
         console.error('Firestore messages listener error:', err);
@@ -129,6 +146,11 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   // Create a new private conversation session
   const handleNewConversation = async () => {
     if (!user) return;
+    // Synchronously clear composer, messages, and any previous error immediately upon user action
+    setInputText('');
+    setMessages([]);
+    setError(null);
+
     try {
       const newId = `conv_${Date.now()}`;
       const newConv: Conversation = {
@@ -140,10 +162,8 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         updatedAt: Date.now(),
       };
 
-      await setDoc(doc(db, 'users', user.uid, 'conversations', newId), newConv);
       setCurrentConversationId(newId);
-      setMessages([]);
-      setError(null);
+      await setDoc(doc(db, 'users', user.uid, 'conversations', newId), newConv);
     } catch (err: any) {
       console.error('Error creating conversation:', err);
       setError('Could not create new session in Firestore.');
@@ -156,6 +176,10 @@ export const JournalChat: React.FC<JournalChatProps> = ({
     if (!promptToSend.trim() || isGenerating || !user) return;
 
     const convId = currentConversationId || `conv_${Date.now()}`;
+    if (!currentConversationId) {
+      setCurrentConversationId(convId);
+    }
+
     const userMsgId = `msg_${Date.now()}_u`;
 
     const userMessage: ChatMessage = {
@@ -164,6 +188,12 @@ export const JournalChat: React.FC<JournalChatProps> = ({
       text: promptToSend.trim(),
       createdAt: Date.now(),
     };
+
+    // Optimistically add user message immediately before any asynchronous operation
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === userMsgId)) return prev;
+      return [...prev, userMessage];
+    });
 
     setInputText('');
     setError(null);
@@ -176,13 +206,13 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         userMessage
       );
 
-      // Auto update conversation title on first message
+      // Auto update conversation title on first message (asynchronously non-blocking)
       const isFirstMessage = messages.length === 0;
       const computedTitle = isFirstMessage 
         ? promptToSend.slice(0, 32).replace(/[^\w\s]/gi, '') + (promptToSend.length > 32 ? '...' : '')
         : undefined;
 
-      await setDoc(
+      const metaUpdatePromise = setDoc(
         doc(db, 'users', user.uid, 'conversations', convId),
         {
           userId: user.uid,
@@ -192,10 +222,11 @@ export const JournalChat: React.FC<JournalChatProps> = ({
           ...(computedTitle ? { title: computedTitle } : {}),
         },
         { merge: true }
-      );
+      ).catch((err) => console.warn('Non-blocking conversation metadata update failed:', err));
 
       // 2. Call server-side multi-turn endpoint with Bearer auth token
       const aiResponse = await sendChatMessage(promptToSend.trim(), messages, moodContext);
+      await metaUpdatePromise;
 
       const assistantMsgId = `msg_${Date.now()}_a`;
       const assistantMessage: ChatMessage = {
@@ -205,21 +236,32 @@ export const JournalChat: React.FC<JournalChatProps> = ({
         createdAt: aiResponse.timestamp || Date.now(),
       };
 
-      // 3. Save assistant response to Firestore
-      await setDoc(
-        doc(db, 'users', user.uid, 'conversations', convId, 'messages', assistantMsgId),
-        assistantMessage
-      );
+      // Immediately add assistant message to local React state before awaiting Firestore
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === assistantMsgId)) return prev;
+        return [...prev, assistantMessage];
+      });
 
-      // Update conversation message count
-      await setDoc(
-        doc(db, 'users', user.uid, 'conversations', convId),
-        {
-          updatedAt: Date.now(),
-          messageCount: messages.length + 2,
-        },
-        { merge: true }
-      );
+      // Immediately allow isGenerating to become false once response is received
+      setIsGenerating(false);
+
+      // 3. Persist assistant response and updated metadata to Firestore in background (non-blocking for UI)
+      Promise.all([
+        setDoc(
+          doc(db, 'users', user.uid, 'conversations', convId, 'messages', assistantMsgId),
+          assistantMessage
+        ),
+        setDoc(
+          doc(db, 'users', user.uid, 'conversations', convId),
+          {
+            updatedAt: Date.now(),
+            messageCount: messages.length + 2,
+          },
+          { merge: true }
+        ),
+      ]).catch((persistErr) => {
+        console.warn('Background Firestore persistence for assistant message failed:', persistErr);
+      });
     } catch (err: any) {
       console.error('Failed to send message:', err);
       setError(err.message || 'Error receiving Gemini response. Verify your connection.');
@@ -382,7 +424,7 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-                <span>Multi-turn Gemini 2.5 Flash</span>
+                <span>Multi-turn Gemini 3.6 Flash</span>
                 <span>•</span>
                 <span>Context preserved</span>
               </p>

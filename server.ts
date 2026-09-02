@@ -288,8 +288,9 @@ ${moodContext ? `Note on user's current mood/state: "${String(moodContext).slice
       ],
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const GEMINI_TIMEOUT_MS = 30000;
+    const generatePromise = ai.models.generateContent({
+      model: 'gemini-3.6-flash',
       contents,
       config: {
         systemInstruction,
@@ -297,6 +298,15 @@ ${moodContext ? `Note on user's current mood/state: "${String(moodContext).slice
         maxOutputTokens: 1000,
       },
     });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('GEMINI_TIMEOUT'));
+      }, GEMINI_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+
+    const response = await Promise.race([generatePromise, timeoutPromise]);
 
     const responseText = response.text || "I'm listening and here with you. What would you like to explore next in your thoughts?";
 
@@ -306,6 +316,13 @@ ${moodContext ? `Note on user's current mood/state: "${String(moodContext).slice
     });
   } catch (err: any) {
     console.error('Error in /api/chat:', err.message || err);
+    if (err.message === 'GEMINI_TIMEOUT') {
+      res.status(504).json({
+        error: 'The reflection assistant timed out while generating a response. Please try again.',
+        code: 'GATEWAY_TIMEOUT',
+      });
+      return;
+    }
     res.status(500).json({
       error: 'An error occurred while generating your journal reflection. Please try again.',
       code: 'GEMINI_INFERENCE_ERROR',
@@ -439,7 +456,7 @@ You MUST respond strictly with a valid JSON object matching this schema:
 Ensure the output is ONLY the raw JSON string without markdown code fences or conversational filler.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -555,7 +572,7 @@ Generate a comprehensive Reflection Insights report strictly adhering to the JSO
 Ensure high depth, precision, and genuine therapeutic value. Return ONLY valid JSON.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',

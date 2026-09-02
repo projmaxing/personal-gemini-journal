@@ -31,7 +31,10 @@ import firebaseConfig from '../../firebase-applet-config.json';
 // Initialize Firebase App safely
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const db = getFirestore(
+  app,
+  (firebaseConfig as any).firestoreDatabaseId || 'ai-studio-personalgeminijo-562521d0-4078-458a-9613-4bc1969def3e'
+);
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
