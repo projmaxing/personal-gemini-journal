@@ -35,10 +35,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="font-bold text-white text-base sm:text-lg tracking-tight">
                 Gemini Journal
               </span>
-              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
-                SECURE SESSION
-              </span>
             </div>
             <p className="text-xs text-slate-400 hidden sm:flex items-center gap-1.5">
               <span>Private</span>
@@ -110,7 +106,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="View Security Checklist & Threat Model Verification"
           >
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden lg:inline">Security Shield</span>
+            <span className="hidden lg:inline">Security</span>
           </button>
 
           {/* User Profile & Sign Out */}

@@ -676,9 +676,6 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                 <h3 className="text-sm font-semibold text-white">
                   {currentConv?.title || 'Private Reflection Session'}
                 </h3>
-                <span className="px-2 py-0.5 bg-slate-800 text-slate-400 text-[10px] rounded uppercase tracking-wider border border-slate-700 hidden sm:inline-block">
-                  Private & Secure
-                </span>
               </div>
               <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
                 <span>Multi-turn Gemini 3.6 Flash</span>
@@ -915,7 +912,7 @@ export const JournalChat: React.FC<JournalChatProps> = ({
 
             <p className="text-center text-[10px] text-slate-500 flex items-center justify-center gap-1.5 pt-1">
               <Lock className="w-3 h-3 text-emerald-400" />
-              <span>End-to-End Encryption Enabled. No one but you can read this journal.</span>
+              <span>Private & Account-Isolated. Accessible only to your authenticated account.</span>
             </p>
           </div>
         </footer>

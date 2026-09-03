@@ -331,7 +331,7 @@ export const ReflectionInsightsModal: React.FC<ReflectionInsightsModalProps> = (
         <div className="p-4 border-t border-slate-800 bg-[#1E293B] flex items-center justify-between text-xs text-slate-400">
           <div className="flex items-center gap-1.5 text-[11px]">
             <Lock className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Encrypted & private to your account</span>
+            <span>Private to your account</span>
           </div>
           <button
             onClick={onClose}

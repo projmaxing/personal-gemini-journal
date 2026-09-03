@@ -19,7 +19,6 @@ import {
   BookOpen, 
   Sparkles, 
   Trash2, 
-  Tag, 
   Smile, 
   Search, 
   Clock, 
@@ -286,13 +285,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
                           {entry.mood}
                         </span>
                       )}
-                      {entry.tags && entry.tags.length > 0 && (
-                        <span className="text-slate-400 flex items-center gap-0.5">
-                          <Tag className="w-2.5 h-2.5 text-slate-500" />
-                          #{entry.tags[0]}
-                          {entry.tags.length > 1 ? ` +${entry.tags.length - 1}` : ''}
-                        </span>
-                      )}
                     </div>
                     {entry.summary && (
                       <span className="text-emerald-400 font-medium flex items-center gap-0.5">
@@ -503,20 +495,6 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
               </div>
             )}
 
-            {/* Tags list */}
-            {selectedEntry.tags && selectedEntry.tags.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {selectedEntry.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 text-xs font-medium"
-                  >
-                    <Tag className="w-3 h-3 text-slate-500" />
-                    #{tag}
-                  </span>
-                ))}
-              </div>
-            )}
 
             {/* Content Body */}
             <div className="bg-[#1E293B]/60 border border-slate-700/50 rounded-2xl p-6 sm:p-8 shadow-md">

@@ -89,7 +89,7 @@ export const AuthScreen: React.FC = () => {
           Gemini Journal
         </h1>
         <p className="mt-2 text-sm text-slate-400 max-w-sm mx-auto">
-          A confidential, multi-turn AI reflection companion with zero-trust authenticated data isolation.
+          A confidential, multi-turn AI reflection companion with private, account-isolated journaling.
         </p>
       </div>
 
@@ -238,22 +238,22 @@ export const AuthScreen: React.FC = () => {
           </button>
         </div>
 
-        {/* Threat Model & Security Posture Quick Highlights */}
+        {/* Security & Privacy Highlights */}
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
           <div className="p-3.5 bg-[#1E293B]/70 border border-slate-700/50 rounded-xl text-left">
             <ShieldCheck className="w-4 h-4 text-emerald-400 mb-1.5" />
-            <div className="text-xs font-semibold text-white">Zero-Trust Tokens</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">Google JWKS signature verified on every request.</div>
+            <div className="text-xs font-semibold text-white">Private & Isolated</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Strict per-user data isolation and boundaries.</div>
           </div>
           <div className="p-3.5 bg-[#1E293B]/70 border border-slate-700/50 rounded-xl text-left">
             <KeyRound className="w-4 h-4 text-cyan-400 mb-1.5" />
-            <div className="text-xs font-semibold text-white">Server-Side Gemini</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">API keys never exposed to browser JavaScript.</div>
+            <div className="text-xs font-semibold text-white">Secure Processing</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Gemini 3.6 Flash reflection on protected server.</div>
           </div>
           <div className="p-3.5 bg-[#1E293B]/70 border border-slate-700/50 rounded-xl text-left">
             <Sparkles className="w-4 h-4 text-blue-400 mb-1.5" />
             <div className="text-xs font-semibold text-white">Reflection Insights</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">Analyzes only your private authenticated entries.</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Discovers personal themes and growth patterns.</div>
           </div>
         </div>
       </div>
