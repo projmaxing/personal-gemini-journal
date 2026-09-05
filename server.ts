@@ -38,9 +38,85 @@ function getGenAI(): GoogleGenAI {
     if (!apiKey || !apiKey.trim()) {
       throw new Error('GEMINI_API_KEY is not configured in runtime environment (Google Cloud Secret Manager mounting required).');
     }
-    genAIClient = new GoogleGenAI({ apiKey: apiKey.trim() });
+    genAIClient = new GoogleGenAI({
+      apiKey: apiKey.trim(),
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
   }
   return genAIClient;
+}
+
+// Resilient Gemini model caller with automatic model fallback across supported models.
+// If any model experiences temporary high demand (503 UNAVAILABLE), it immediately switches
+// to the next model in the pool to avoid user delays.
+const GEMINI_TEXT_MODELS = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+
+interface GenerateWithFallbackOptions {
+  model?: string;
+  contents: any;
+  config?: any;
+}
+
+async function generateWithFallbackAndRetry(
+  ai: GoogleGenAI,
+  options: GenerateWithFallbackOptions
+) {
+  const primaryModel = options.model || GEMINI_TEXT_MODELS[0];
+  const modelsToTry = [
+    primaryModel,
+    ...GEMINI_TEXT_MODELS.filter((m) => m !== primaryModel),
+  ];
+
+  let lastError: any = null;
+
+  for (const modelName of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        ...options,
+        model: modelName,
+      });
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = String(err?.message || err || '');
+      const errStatus =
+        err?.status ||
+        err?.error?.status ||
+        err?.code ||
+        err?.error?.code ||
+        (err?.response && err.response.status);
+
+      const isHighDemand =
+        errStatus === 503 ||
+        errStatus === 'UNAVAILABLE' ||
+        errMsg.includes('503') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('high demand');
+
+      console.warn(
+        `[Gemini Call] Model "${modelName}" error: ${errMsg}`
+      );
+
+      if (isHighDemand) {
+        // High demand is model-specific; immediately failover to next model without wasting user time
+        continue;
+      }
+
+      if (errStatus === 429 || errStatus === 'RESOURCE_EXHAUSTED' || errMsg.includes('quota')) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+
+      // If non-transient, stop trying further models
+      break;
+    }
+  }
+
+  throw lastError;
 }
 
 // Google JWKS set for verifying Firebase ID tokens cryptographically
@@ -302,9 +378,9 @@ ${moodContext ? `Note on user's current mood/state: "${String(moodContext).slice
       ],
     });
 
-    const GEMINI_TIMEOUT_MS = 30000;
-    const generatePromise = ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const GEMINI_TIMEOUT_MS = 35000;
+    const generatePromise = generateWithFallbackAndRetry(ai, {
+      model: 'gemini-3.1-flash-lite',
       contents,
       config: {
         systemInstruction,
@@ -337,9 +413,18 @@ ${moodContext ? `Note on user's current mood/state: "${String(moodContext).slice
       });
       return;
     }
-    res.status(500).json({
-      error: 'An error occurred while generating your journal reflection. Please try again.',
-      code: 'GEMINI_INFERENCE_ERROR',
+    const errMsg = String(err?.message || err || '');
+    const isOverloaded =
+      errMsg.includes('high demand') ||
+      errMsg.includes('503') ||
+      errMsg.includes('UNAVAILABLE') ||
+      errMsg.includes('RESOURCE_EXHAUSTED');
+
+    res.status(isOverloaded ? 503 : 500).json({
+      error: isOverloaded
+        ? 'The reflection assistant is experiencing temporary high demand. Please try again in a few moments.'
+        : 'An error occurred while generating your journal reflection. Please try again.',
+      code: isOverloaded ? 'MODEL_HIGH_DEMAND' : 'GEMINI_INFERENCE_ERROR',
     });
   }
 });
@@ -482,8 +567,8 @@ You MUST respond strictly with a valid JSON object matching this schema:
 
 Ensure the output is ONLY the raw JSON string without markdown code fences or conversational filler.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateWithFallbackAndRetry(ai, {
+      model: 'gemini-3.1-flash-lite',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -513,9 +598,18 @@ Ensure the output is ONLY the raw JSON string without markdown code fences or co
     });
   } catch (err: any) {
     console.error('Error in /api/summarize:', err.message || err);
-    res.status(500).json({
-      error: 'Failed to generate automatic summary.',
-      code: 'SUMMARY_GENERATION_FAILED',
+    const errMsg = String(err?.message || err || '');
+    const isOverloaded =
+      errMsg.includes('high demand') ||
+      errMsg.includes('503') ||
+      errMsg.includes('UNAVAILABLE') ||
+      errMsg.includes('RESOURCE_EXHAUSTED');
+
+    res.status(isOverloaded ? 503 : 500).json({
+      error: isOverloaded
+        ? 'The AI model is experiencing temporary high demand. Please wait a moment and try again.'
+        : 'Failed to generate automatic summary. Please try again.',
+      code: isOverloaded ? 'MODEL_HIGH_DEMAND' : 'SUMMARY_GENERATION_FAILED',
     });
   }
 });
@@ -602,8 +696,8 @@ Respond ONLY with valid JSON matching this schema:
   ]
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await generateWithFallbackAndRetry(ai, {
+      model: 'gemini-3.1-flash-lite',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -637,9 +731,18 @@ Respond ONLY with valid JSON matching this schema:
     });
   } catch (err: any) {
     console.error('Error in /api/reflection-insights:', err.message || err);
-    res.status(500).json({
-      error: 'Failed to generate reflection insights.',
-      code: 'INSIGHTS_GENERATION_FAILED',
+    const errMsg = String(err?.message || err || '');
+    const isOverloaded =
+      errMsg.includes('high demand') ||
+      errMsg.includes('503') ||
+      errMsg.includes('UNAVAILABLE') ||
+      errMsg.includes('RESOURCE_EXHAUSTED');
+
+    res.status(isOverloaded ? 503 : 500).json({
+      error: isOverloaded
+        ? 'The reflection insights service is experiencing temporary high demand. Please wait a moment and try again.'
+        : 'Failed to generate reflection insights. Please try again.',
+      code: isOverloaded ? 'MODEL_HIGH_DEMAND' : 'INSIGHTS_GENERATION_FAILED',
     });
   }
 });

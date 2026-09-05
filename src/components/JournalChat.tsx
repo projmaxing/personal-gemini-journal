@@ -31,7 +31,11 @@ import {
   Smile,
   Compass,
   Trash2,
-  X
+  X,
+  Copy,
+  Check,
+  Pencil,
+  RotateCcw
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -63,6 +67,11 @@ export const JournalChat: React.FC<JournalChatProps> = ({
   const [summaryNotification, setSummaryNotification] = useState<string | null>(null);
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [sessionTitleInput, setSessionTitleInput] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [regeneratingMsgId, setRegeneratingMsgId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -248,6 +257,144 @@ export const JournalChat: React.FC<JournalChatProps> = ({
       setError(err.message || 'Failed to delete conversation. Please try again.');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Copy message text to clipboard with fallback
+  const handleCopyMessageText = async (msgId: string, text: string) => {
+    let success = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        success = true;
+      }
+    } catch (clipErr) {
+      console.warn('Clipboard API writeText failed, trying fallback:', clipErr);
+    }
+
+    if (!success) {
+      try {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        success = document.execCommand('copy');
+        document.body.removeChild(textArea);
+      } catch (fallbackErr) {
+        console.error('Fallback copy failed:', fallbackErr);
+      }
+    }
+
+    if (success) {
+      setCopiedMessageId(msgId);
+      setTimeout(() => {
+        setCopiedMessageId((prev) => (prev === msgId ? null : prev));
+      }, 2000);
+    }
+  };
+
+  // Start renaming session
+  const startRenaming = (convId: string, currentTitle: string) => {
+    setEditingSessionId(convId);
+    setSessionTitleInput(currentTitle);
+  };
+
+  // Save renamed session title to Firestore
+  const handleSaveSessionTitle = async (convId: string) => {
+    const trimmed = sessionTitleInput.trim();
+    if (!trimmed || !user || isRenaming) {
+      setEditingSessionId(null);
+      return;
+    }
+    setIsRenaming(true);
+    try {
+      await setDoc(
+        doc(db, 'users', user.uid, 'conversations', convId),
+        {
+          title: trimmed,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+      setEditingSessionId(null);
+    } catch (err: any) {
+      console.error('Error renaming conversation:', err);
+      setError('Failed to rename session. Please try again.');
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  // Regenerate an assistant response using its preceding user prompt
+  const handleRegenerateResponse = async (assistantMsg: ChatMessage) => {
+    if (isGenerating || !user || !currentConversationId) return;
+
+    const msgIndex = messages.findIndex((m) => m.id === assistantMsg.id);
+    if (msgIndex === -1) return;
+
+    // Search backwards to find the user prompt that prompted this response
+    let promptUserMsg: ChatMessage | null = null;
+    let priorHistory: ChatMessage[] = [];
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        promptUserMsg = messages[i];
+        priorHistory = messages.slice(0, i);
+        break;
+      }
+    }
+
+    if (!promptUserMsg) {
+      setError('No user prompt found to regenerate a response for.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setRegeneratingMsgId(assistantMsg.id);
+    setError(null);
+
+    const targetConvId = currentConversationId;
+
+    try {
+      const aiResponse = await sendChatMessage(promptUserMsg.text, priorHistory, moodContext);
+
+      if (currentConversationIdRef.current === targetConvId) {
+        const updatedAssistantMessage: ChatMessage = {
+          ...assistantMsg,
+          text: aiResponse.text,
+          createdAt: aiResponse.timestamp || Date.now(),
+        };
+
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsg.id ? updatedAssistantMessage : m))
+        );
+
+        // Update Firestore message document
+        await setDoc(
+          doc(db, 'users', user.uid, 'conversations', targetConvId, 'messages', assistantMsg.id),
+          updatedAssistantMessage,
+          { merge: true }
+        );
+
+        // Update conversation timestamp
+        await setDoc(
+          doc(db, 'users', user.uid, 'conversations', targetConvId),
+          { updatedAt: Date.now() },
+          { merge: true }
+        );
+      }
+    } catch (err: any) {
+      console.error('Failed to regenerate response:', err);
+      if (currentConversationIdRef.current === targetConvId) {
+        setError(err.message || 'Error regenerating response. Please try again.');
+      }
+    } finally {
+      if (currentConversationIdRef.current === targetConvId) {
+        setIsGenerating(false);
+        setRegeneratingMsgId(null);
+      }
     }
   };
 
@@ -610,45 +757,103 @@ export const JournalChat: React.FC<JournalChatProps> = ({
           ) : (
             conversations.map((conv) => {
               const isSelected = conv.id === currentConversationId;
+              const isEditingThis = editingSessionId === conv.id;
               return (
                 <div
                   key={conv.id}
-                  onClick={() => handleSelectConversation(conv.id)}
-                  className={`w-full text-left p-3 rounded-xl transition-all border group cursor-pointer relative ${
+                  onClick={() => {
+                    if (!isEditingThis) {
+                      handleSelectConversation(conv.id);
+                    }
+                  }}
+                  className={`w-full text-left p-3 rounded-xl transition-all border group relative ${
                     isSelected
                       ? 'bg-slate-800/90 border-slate-700 shadow-md text-white'
-                      : 'border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200'
+                      : 'border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200 cursor-pointer'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className={`font-medium text-xs truncate max-w-[160px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
-                      {conv.title || 'Untitled Session'}
-                    </span>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {new Date(conv.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                      </span>
-                      <button
-                        id={`btn-delete-conv-${conv.id}`}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!isGenerating && !isDeleting) {
-                            setConversationToDelete(conv);
-                          }
+                  {isEditingThis ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSaveSessionTitle(conv.id);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-1.5"
+                    >
+                      <input
+                        type="text"
+                        value={sessionTitleInput}
+                        onChange={(e) => setSessionTitleInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setEditingSessionId(null);
                         }}
-                        disabled={isGenerating || isDeleting}
-                        className={`p-1 rounded-md transition-colors ${
-                          isGenerating || isDeleting
-                            ? 'opacity-20 cursor-not-allowed text-slate-600'
-                            : 'text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-60 group-hover:opacity-100'
-                        }`}
-                        title={isGenerating ? 'Cannot delete while generating' : 'Delete session'}
+                        autoFocus
+                        maxLength={60}
+                        placeholder="Session name"
+                        className="w-full px-2 py-1 text-xs bg-slate-900 border border-blue-500 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isRenaming || !sessionTitleInput.trim()}
+                        className="p-1 text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors shrink-0"
+                        title="Save session name"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Check className="w-3.5 h-3.5" />
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingSessionId(null)}
+                        className="p-1 text-slate-400 hover:bg-slate-700 rounded transition-colors shrink-0"
+                        title="Cancel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="flex items-center justify-between gap-1">
+                      <span className={`font-medium text-xs truncate max-w-[130px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
+                        {conv.title || 'Untitled Session'}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {new Date(conv.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                        <button
+                          id={`btn-rename-conv-${conv.id}`}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRenaming(conv.id, conv.title || 'Untitled Session');
+                          }}
+                          className="p-1 rounded-md text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 opacity-60 group-hover:opacity-100 transition-colors"
+                          title="Rename session"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                        <button
+                          id={`btn-delete-conv-${conv.id}`}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!isGenerating && !isDeleting) {
+                              setConversationToDelete(conv);
+                            }
+                          }}
+                          disabled={isGenerating || isDeleting}
+                          className={`p-1 rounded-md transition-colors ${
+                            isGenerating || isDeleting
+                              ? 'opacity-20 cursor-not-allowed text-slate-600'
+                              : 'text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-60 group-hover:opacity-100'
+                          }`}
+                          title={isGenerating ? 'Cannot delete while generating' : 'Delete session'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               );
             })
@@ -673,12 +878,63 @@ export const JournalChat: React.FC<JournalChatProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2.5">
-                <h3 className="text-sm font-semibold text-white">
-                  {currentConv?.title || 'Private Reflection Session'}
-                </h3>
+                {currentConv && editingSessionId === currentConv.id ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSaveSessionTitle(currentConv.id);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={sessionTitleInput}
+                      onChange={(e) => setSessionTitleInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setEditingSessionId(null);
+                      }}
+                      autoFocus
+                      maxLength={60}
+                      placeholder="Session name"
+                      className="px-2.5 py-1 text-xs bg-slate-800 border border-blue-500 rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-44 sm:w-64"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isRenaming || !sessionTitleInput.trim()}
+                      className="p-1 text-emerald-400 hover:bg-emerald-500/10 rounded-md transition-colors shrink-0"
+                      title="Save session name"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingSessionId(null)}
+                      className="p-1 text-slate-400 hover:bg-slate-800 rounded-md transition-colors shrink-0"
+                      title="Cancel"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-white">
+                      {currentConv?.title || 'Private Reflection Session'}
+                    </h3>
+                    {currentConv && (
+                      <button
+                        type="button"
+                        onClick={() => startRenaming(currentConv.id, currentConv.title || 'Private Reflection Session')}
+                        className="p-1 text-slate-400 hover:text-blue-400 hover:bg-slate-800 rounded-md transition-colors"
+                        title="Rename session"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-                <span>Multi-turn Gemini 3.6 Flash</span>
+                <span>Multi-turn Gemini Flash</span>
                 <span>•</span>
                 <span>Context preserved</span>
               </p>
@@ -807,11 +1063,30 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                   className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
                   {isUser ? (
-                    <div className="max-w-[75%] bg-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-lg shadow-blue-600/10">
+                    <div className="max-w-[75%] bg-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-lg shadow-blue-600/10 group relative">
                       <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.text}</p>
-                      <p className="text-[10px] text-blue-200 mt-2 text-right">
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </p>
+                      <div className="flex items-center justify-between gap-3 mt-2.5 pt-1.5 border-t border-blue-500/30 text-[10px] text-blue-200">
+                        <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <button
+                          id={`btn-copy-msg-${msg.id}`}
+                          type="button"
+                          onClick={() => handleCopyMessageText(msg.id, msg.text)}
+                          className="inline-flex items-center gap-1 text-[10px] text-blue-200 hover:text-white hover:bg-blue-700/60 px-1.5 py-0.5 rounded transition-colors"
+                          title="Copy sent text"
+                        >
+                          {copiedMessageId === msg.id ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-300" />
+                              <span className="text-emerald-200 font-medium">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="max-w-[85%] bg-[#1E293B] text-slate-200 p-5 rounded-2xl rounded-tl-none border border-slate-700/80 shadow-xl">
@@ -822,8 +1097,44 @@ export const JournalChat: React.FC<JournalChatProps> = ({
                       <div className="prose prose-invert prose-xs sm:prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 text-slate-200 leading-relaxed">
                         <ReactMarkdown>{msg.text}</ReactMarkdown>
                       </div>
-                      <div className="text-[10px] text-slate-500 mt-2 font-mono">
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 mt-2.5 font-mono pt-2 border-t border-slate-800">
+                        <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <div className="flex items-center gap-1.5 font-sans">
+                          <button
+                            id={`btn-copy-msg-${msg.id}`}
+                            type="button"
+                            onClick={() => handleCopyMessageText(msg.id, msg.text)}
+                            className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800 px-2 py-0.5 rounded-md transition-colors"
+                            title="Copy reflection"
+                          >
+                            {copiedMessageId === msg.id ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span className="text-emerald-400 font-medium">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                          <button
+                            id={`btn-regenerate-msg-${msg.id}`}
+                            type="button"
+                            onClick={() => handleRegenerateResponse(msg)}
+                            disabled={isGenerating}
+                            className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md transition-colors ${
+                              isGenerating
+                                ? 'text-slate-600 cursor-not-allowed'
+                                : 'text-slate-400 hover:text-cyan-400 hover:bg-slate-800'
+                            }`}
+                            title={isGenerating ? 'Gemini is reflecting...' : 'Regenerate response'}
+                          >
+                            <RotateCcw className={`w-3 h-3 ${regeneratingMsgId === msg.id ? 'animate-spin text-cyan-400' : ''}`} />
+                            <span>{regeneratingMsgId === msg.id ? 'Regenerating...' : 'Regenerate'}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

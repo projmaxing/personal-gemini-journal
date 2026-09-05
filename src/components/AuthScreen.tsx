@@ -248,7 +248,7 @@ export const AuthScreen: React.FC = () => {
           <div className="p-3.5 bg-[#1E293B]/70 border border-slate-700/50 rounded-xl text-left">
             <KeyRound className="w-4 h-4 text-cyan-400 mb-1.5" />
             <div className="text-xs font-semibold text-white">Secure Processing</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">Gemini 3.6 Flash reflection on protected server.</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Gemini Flash reflection on protected server.</div>
           </div>
           <div className="p-3.5 bg-[#1E293B]/70 border border-slate-700/50 rounded-xl text-left">
             <Sparkles className="w-4 h-4 text-blue-400 mb-1.5" />
