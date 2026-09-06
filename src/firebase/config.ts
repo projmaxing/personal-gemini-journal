@@ -44,8 +44,15 @@ export const signInWithGoogle = async () => {
   try {
     return await signInWithPopup(auth, googleProvider);
   } catch (err: any) {
-    // If popup is blocked in iframe sandbox or not enabled, provide clean fallback error
-    console.error('Google sign-in error:', err);
+    if (
+      err?.code === 'auth/popup-closed-by-user' ||
+      err?.code === 'auth/cancelled-popup-request'
+    ) {
+      // User closed the popup window or dismissed the Google account prompt.
+      // This is normal user cancellation and should not trigger console errors.
+      return null;
+    }
+    console.error('Google sign-in error:', err?.message || err);
     throw err;
   }
 };
@@ -59,7 +66,21 @@ export const signUpWithEmail = async (email: string, pass: string) => {
 };
 
 export const signInAsGuest = async () => {
-  return await signInAnonymously(auth);
+  try {
+    return await signInAnonymously(auth);
+  } catch (err: any) {
+    if (
+      err?.code === 'auth/admin-restricted-operation' ||
+      err?.code === 'auth/operation-not-allowed'
+    ) {
+      const customErr = new Error(
+        'Guest (anonymous) sign-in is disabled in this Firebase project settings. Please sign in with Google.'
+      );
+      (customErr as any).code = err.code;
+      throw customErr;
+    }
+    throw err;
+  }
 };
 
 export const signOutUser = async () => {

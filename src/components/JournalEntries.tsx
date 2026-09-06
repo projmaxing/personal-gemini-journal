@@ -27,7 +27,8 @@ import {
   AlertCircle, 
   RefreshCw,
   Edit3,
-  Save
+  Save,
+  X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -56,6 +57,8 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [entryToDelete, setEntryToDelete] = useState<JournalEntry | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Real-time Firestore sync on users/{uid}/journals
   useEffect(() => {
@@ -180,20 +183,31 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
     }
   };
 
-  const handleDeleteEntry = async (entryId: string) => {
-    if (!user) return;
-    if (!window.confirm('Are you sure you want to permanently delete this journal entry?')) return;
+  const promptDeleteEntry = (entry: JournalEntry) => {
+    setEntryToDelete(entry);
+  };
+
+  const confirmDeleteEntry = async () => {
+    if (!user || !entryToDelete) return;
+    setIsDeleting(true);
+    setError(null);
 
     try {
+      const entryId = entryToDelete.id;
       await deleteDoc(doc(db, 'users', user.uid, 'journals', entryId));
       await deleteDoc(doc(db, 'users', user.uid, 'summaries', `summary_journal_${entryId}`)).catch(() => {});
       if (selectedEntry?.id === entryId) {
         setSelectedEntry(null);
         setIsEditing(false);
       }
+      setEntryToDelete(null);
+      setSuccessMessage('Journal entry deleted permanently.');
+      setTimeout(() => setSuccessMessage(null), 3500);
     } catch (err: any) {
       console.error('Delete error:', err);
-      setError('Could not delete entry.');
+      setError('Could not delete entry. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -253,25 +267,49 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
             filteredEntries.map((entry) => {
               const isSelected = selectedEntry?.id === entry.id && !isEditing;
               return (
-                <button
+                <div
                   key={entry.id}
+                  id={`journal-entry-card-${entry.id}`}
                   onClick={() => {
                     setSelectedEntry(entry);
                     setIsEditing(false);
                   }}
-                  className={`w-full text-left p-3.5 rounded-xl transition-all border group ${
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      setSelectedEntry(entry);
+                      setIsEditing(false);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  className={`w-full text-left p-3.5 rounded-xl transition-all border group cursor-pointer ${
                     isSelected
                       ? 'bg-slate-800/90 border-slate-700 shadow-md text-white'
                       : 'border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-1">
-                    <h4 className={`font-semibold text-xs truncate max-w-[200px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
+                    <h4 className={`font-semibold text-xs truncate max-w-[170px] ${isSelected ? 'text-blue-300' : 'group-hover:text-blue-400'}`}>
                       {entry.title}
                     </h4>
-                    <span className="text-[10px] text-slate-500 font-mono shrink-0">
-                      {new Date(entry.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {new Date(entry.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </span>
+                      <button
+                        id={`btn-delete-entry-item-${entry.id}`}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          promptDeleteEntry(entry);
+                        }}
+                        className="p-1 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-60 group-hover:opacity-100 transition-all"
+                        title="Delete journal entry"
+                        aria-label={`Delete ${entry.title}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <p className="text-[11px] text-slate-400 line-clamp-2 mt-1 leading-relaxed">
@@ -292,7 +330,7 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
                       </span>
                     )}
                   </div>
-                </button>
+                </div>
               );
             })
           )}
@@ -473,7 +511,8 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
                   Edit
                 </button>
                 <button
-                  onClick={() => handleDeleteEntry(selectedEntry.id)}
+                  id="btn-delete-entry-reader"
+                  onClick={() => promptDeleteEntry(selectedEntry)}
                   className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800 hover:bg-slate-700/80 rounded-xl transition-colors border border-slate-700"
                   title="Delete entry"
                 >
@@ -514,6 +553,88 @@ export const JournalEntries: React.FC<JournalEntriesProps> = ({
           </div>
         )}
       </main>
+
+      {/* Delete Entry Confirmation Modal */}
+      {entryToDelete && (
+        <div
+          id="modal-delete-entry-backdrop"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            if (!isDeleting) setEntryToDelete(null);
+          }}
+        >
+          <div
+            id="modal-delete-entry"
+            className="bg-[#1E293B] border border-slate-700/90 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-white truncate max-w-[280px]">
+                    Delete “{entryToDelete.title || 'Untitled Entry'}”?
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Created on {new Date(entryToDelete.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+              <button
+                id="btn-close-delete-entry-modal"
+                onClick={() => {
+                  if (!isDeleting) setEntryToDelete(null);
+                }}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-sm text-slate-300">
+              <p className="leading-relaxed">
+                This will permanently delete this journal entry and its linked summary from your private database. This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                id="btn-cancel-delete-entry"
+                type="button"
+                onClick={() => {
+                  if (!isDeleting) setEntryToDelete(null);
+                }}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                id="btn-confirm-delete-entry"
+                type="button"
+                onClick={confirmDeleteEntry}
+                disabled={isDeleting}
+                className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-xl transition-colors shadow-lg shadow-rose-600/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting Entry...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Entry</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

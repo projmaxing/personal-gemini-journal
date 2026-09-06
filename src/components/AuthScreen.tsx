@@ -5,7 +5,7 @@ import {
   signUpWithEmail, 
   signInAsGuest 
 } from '../firebase/config';
-import { ShieldCheck, Lock, KeyRound, Sparkles, AlertCircle, ArrowRight, UserCheck } from 'lucide-react';
+import { ShieldCheck, Lock, KeyRound, Sparkles, AlertCircle, ArrowRight, UserCheck, ExternalLink } from 'lucide-react';
 
 export const AuthScreen: React.FC = () => {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -13,6 +13,7 @@ export const AuthScreen: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [popupBlocked, setPopupBlocked] = useState(false);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,14 +35,16 @@ export const AuthScreen: React.FC = () => {
         await signInWithEmail(email, password);
       }
     } catch (err: any) {
-      console.error('Auth error:', err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+      if (err?.code === 'auth/operation-not-allowed') {
+        setError('Email & Password sign-in is disabled in this Firebase project. Please use "Continue with Google".');
+      } else if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         setError('Invalid email or password.');
       } else if (err.code === 'auth/email-already-in-use') {
         setError('An account with this email already exists.');
       } else if (err.code === 'auth/weak-password') {
         setError('Password should be stronger (at least 6 characters).');
       } else {
+        console.error('Auth error:', err?.message || err);
         setError(err.message || 'Authentication failed. Please check credentials.');
       }
     } finally {
@@ -52,14 +55,27 @@ export const AuthScreen: React.FC = () => {
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError(null);
+    setPopupBlocked(false);
     try {
-      await signInWithGoogle();
+      const res = await signInWithGoogle();
+      if (!res) {
+        // User closed or dismissed the popup cleanly - no error or warning needed
+        return;
+      }
     } catch (err: any) {
-      console.error('Google Sign-In failed:', err);
-      if (err.code === 'auth/popup-blocked') {
-        setError('Sign-in popup was blocked by browser. Please allow popups or use Email/Guest sign-in.');
+      if (
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.code === 'auth/cancelled-popup-request'
+      ) {
+        // Deliberate user action, no alert or error needed
+        return;
+      }
+      if (err?.code === 'auth/popup-blocked') {
+        setPopupBlocked(true);
+        setError('Sign-in popup was blocked by your browser. Please allow popups or open the app in a new tab.');
       } else {
-        setError('Google sign-in could not be completed. You may also use Email or Verified Guest sign-in below.');
+        console.error('Google Sign-In failed:', err?.message || err);
+        setError(err?.message || 'Google sign-in could not be completed. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -72,8 +88,16 @@ export const AuthScreen: React.FC = () => {
     try {
       await signInAsGuest();
     } catch (err: any) {
-      console.error('Guest Sign-In failed:', err);
-      setError('Guest authentication failed. Please try Email sign-in.');
+      if (
+        err?.code === 'auth/admin-restricted-operation' ||
+        err?.code === 'auth/operation-not-allowed'
+      ) {
+        // Anonymous auth is disabled in the Firebase project settings
+        setError('Guest (anonymous) sign-in is disabled in this Firebase project. Please use "Continue with Google" above.');
+      } else {
+        console.error('Guest Sign-In failed:', err?.message || err);
+        setError('Guest authentication failed. Please sign in with Google.');
+      }
     } finally {
       setLoading(false);
     }
@@ -140,8 +164,23 @@ export const AuthScreen: React.FC = () => {
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
               />
             </svg>
-            Continue with Google
+            <span>{loading ? 'Connecting to Google...' : 'Continue with Google'}</span>
           </button>
+
+          {/* Direct new tab fallback helper for iframe preview environments */}
+          <div className="mt-3 text-center">
+            <a
+              id="link-auth-new-tab"
+              href={window.location.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-cyan-400 transition-colors"
+              title="Open the application in a full browser tab for seamless Google OAuth"
+            >
+              <ExternalLink className="w-3 h-3" />
+              <span>Having trouble with popups? Open in a new tab</span>
+            </a>
+          </div>
 
           <div className="relative my-5">
             <div className="absolute inset-0 flex items-center">
